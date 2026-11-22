@@ -14,7 +14,12 @@ import {
 import { PALETTE_THEMES } from './engine/dustAtlas';
 import { DEFAULT_IMAGE_TUNING } from './engine/imageSampler';
 import { parseLayoutMarkup } from './engine/layoutParser';
-import { IMAGE_PRESETS, LAYOUT_PRESETS, resolveDemoLayoutImage } from './demo/presets';
+import {
+  IMAGE_PRESETS,
+  LAYOUT_PRESETS,
+  demoLayoutPadding,
+  resolveDemoLayoutImage,
+} from './demo/presets';
 import type {
   DialoguePrompt,
   GestureKind,
@@ -728,6 +733,8 @@ export default function App() {
         onSoundImpulse={handleSoundImpulse}
         className="fixed inset-0"
         resolveLayoutImage={resolveDemoLayoutImage}
+        layoutPadding={demoLayoutPadding}
+        layoutAutoDissolve
       />
 
       {/* Drag-and-drop overlay cue */}

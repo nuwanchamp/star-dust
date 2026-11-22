@@ -140,6 +140,54 @@ export interface LayoutSceneResult {
   hitRegions: LayoutHitRegion[];
   rippleRegions: RippleRegion[];
   cellSize: number;
+  /** How far the content can scroll (0 when it fits). Coordinates are at scroll 0. */
+  scrollMax: number;
+  /**
+   * When scrollable, `points` cover the whole layout untrimmed; the caller should give particles only
+   * to what is on screen, at most `screenBudget` per screen, never thinning `priorityRegionIds` (buttons).
+   */
+  screenBudget: number;
+  priorityRegionIds: number[];
+}
+
+export interface LayoutPaddingBox {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+export type LayoutOverflow = 'scroll' | 'fit';
+
+export interface LayoutSceneOptions {
+  /** Extra space reserved on the left (added to padding.left). */
+  leftInset?: number;
+  collapsedMindMapIds?: Set<string>;
+  /** Space kept clear around the layout. Default: 32px (16px below 640px wide). */
+  padding?: LayoutPaddingBox;
+  /** 'scroll': keep text legible and let it scroll. 'fit': shrink everything to fit. Default 'scroll'. */
+  overflow?: LayoutOverflow;
+  /** Smallest font size (px) 'scroll' mode may shrink text to. Default 14. */
+  minFontSize?: number;
+  /** Max particles for one screen of layout. Default by density: 16.5k / 30k / 45k. */
+  particleBudget?: number;
+  /**
+   * Thin points evenly to fit the budget when the layout fits the screen (default true). Pass false
+   * when the caller limits by visible height instead (LayoutWindow); points are then never thinned here.
+   */
+  trim?: boolean;
+}
+
+/** Smallest font size used anywhere in a measured tree (Infinity if none). */
+function smallestFontSize(m: MeasuredLayoutNode): number {
+  let min = m.fontSize && m.fontSize > 0 ? m.fontSize : Infinity;
+  if (m.mindMapData) {
+    for (const n of m.mindMapData.nodes) {
+      if (n.fontSize > 0) min = Math.min(min, n.fontSize);
+    }
+  }
+  for (const child of m.children) min = Math.min(min, smallestFontSize(child));
+  return min;
 }
 
 const FONT_FAMILY_MAP: Record<FontStyle, string> = {
@@ -1663,29 +1711,45 @@ export function sampleLayoutScene(
   imageTuning: ImageTuningConfig,
   imageCache: Map<string, HTMLImageElement>,
   resolveImage: LayoutImageResolver,
-  leftInset = 0,
-  collapsedMindMapIds?: Set<string>
+  sceneOptions: LayoutSceneOptions = {}
 ): LayoutSceneResult {
+  const empty: LayoutSceneResult = {
+    points: [],
+    hitRegions: [],
+    rippleRegions: [],
+    cellSize: 2,
+    scrollMax: 0,
+    screenBudget: 0,
+    priorityRegionIds: [],
+  };
   if (!root || viewportWidth < 120 || viewportHeight < 120) {
-    return { points: [], hitRegions: [], rippleRegions: [], cellSize: 2 };
+    return empty;
   }
 
   const measureCanvas = document.createElement('canvas');
   const measureCtx = measureCanvas.getContext('2d');
-  if (!measureCtx) return { points: [], hitRegions: [], rippleRegions: [], cellSize: 2 };
+  if (!measureCtx) return empty;
 
+  const {
+    leftInset = 0,
+    collapsedMindMapIds,
+    overflow = 'scroll',
+    minFontSize = 14,
+    particleBudget,
+    trim = true,
+  } = sceneOptions;
   const compact = viewportWidth < 640;
-  const topReserve = Math.min(
-    compact ? 66 : 80,
-    Math.max(46, viewportHeight * 0.13)
-  );
-  const bottomReserve = Math.min(
-    compact ? 150 : 166,
-    Math.max(92, viewportHeight * 0.27)
-  );
-  const sideMargin = compact ? 16 : 36;
-  const usableLeft = leftInset + sideMargin;
-  const usableRight = viewportWidth - sideMargin;
+  const defaultPad = compact ? 16 : 32;
+  const padding = sceneOptions.padding ?? {
+    top: defaultPad,
+    right: defaultPad,
+    bottom: defaultPad,
+    left: defaultPad,
+  };
+  const topReserve = padding.top;
+  const bottomReserve = padding.bottom;
+  const usableLeft = leftInset + padding.left;
+  const usableRight = viewportWidth - padding.right;
 
   const safeW = Math.max(160, usableRight - usableLeft);
   const safeH = Math.max(96, viewportHeight - topReserve - bottomReserve);
@@ -1702,25 +1766,35 @@ export function sampleLayoutScene(
     collapsedMindMapIds
   );
 
-  // Uniformly scale down resolved container rect if authored scene exceeds safe viewport
-  const fitScale = Math.min(
-    1,
-    safeW / Math.max(1, measured.intrinsicWidth),
-    safeH / Math.max(1, measured.intrinsicHeight)
-  );
+  // Uniformly scale down the scene if it exceeds the safe viewport. In 'scroll' mode the height fit
+  // never shrinks text below minFontSize; whatever still overflows becomes scrollable.
+  const widthFit = safeW / Math.max(1, measured.intrinsicWidth);
+  const heightFit = safeH / Math.max(1, measured.intrinsicHeight);
+  let fitScale: number;
+  if (overflow === 'fit') {
+    fitScale = Math.min(1, widthFit, heightFit);
+  } else {
+    const smallest = smallestFontSize(measured);
+    const legibleFloor = Number.isFinite(smallest) ? Math.min(1, minFontSize / smallest) : 1;
+    fitScale = Math.min(1, widthFit, Math.max(heightFit, legibleFloor));
+  }
 
   const rootW = measured.intrinsicWidth;
   const rootH = measured.intrinsicHeight;
+  const scaledH = rootH * fitScale;
+  const overflows = overflow === 'scroll' && scaledH > safeH + 0.5;
+  const scrollMax = overflows ? Math.ceil(scaledH - safeH) : 0;
   const rootX = usableLeft + (safeW - rootW) * 0.5;
-  const rootY = topReserve + (safeH - rootH) * 0.5;
+  // Overflowing content starts at the top of the safe area (scaled about its top edge); otherwise centered.
+  const rootY = overflows ? topReserve : topReserve + (safeH - rootH) * 0.5;
 
   const placedLeaves: PlacedLeaf[] = [];
   arrangeNode(measured, { x: rootX, y: rootY, width: rootW, height: rootH }, placedLeaves);
 
-  // Apply uniform viewport-fit scaling around center if needed
+  // Apply uniform viewport-fit scaling if needed
   if (fitScale < 0.995) {
     const cx = usableLeft + safeW * 0.5;
-    const cy = topReserve + safeH * 0.5;
+    const cy = overflows ? topReserve : topReserve + safeH * 0.5;
     for (const leaf of placedLeaves) {
       leaf.rect = {
         x: cx + (leaf.rect.x - cx) * fitScale,
@@ -1764,7 +1838,7 @@ export function sampleLayoutScene(
     }
   }
 
-  const totalBudget = LAYOUT_BUDGET_BY_DENSITY[density];
+  const totalBudget = Math.max(1000, Math.round(particleBudget ?? LAYOUT_BUDGET_BY_DENSITY[density]));
   const hitRegions: LayoutHitRegion[] = [];
   const rippleRegions: RippleRegion[] = [];
   const buttonRegionIds = new Set<number>();
@@ -2499,7 +2573,10 @@ export function sampleLayoutScene(
 
   // If total text points exceed totalBudget cleanly trim text-only (keep buttons intact)
   let finalPoints: SampledPoint[];
-  if (textAndControlPoints.length + imagePoints.length > totalBudget) {
+  if (scrollMax > 0 || !trim) {
+    // Return everything; the caller budgets by what is visible (see LayoutWindow).
+    finalPoints = [...textAndControlPoints, ...imagePoints];
+  } else if (textAndControlPoints.length + imagePoints.length > totalBudget) {
     const buttonPts = textAndControlPoints.filter(
       (p) => p.regionId !== undefined && buttonRegionIds.has(p.regionId)
     );
@@ -2528,5 +2605,8 @@ export function sampleLayoutScene(
     hitRegions,
     rippleRegions,
     cellSize: imageLeaves.length > 0 ? imageCellSize : 2,
+    scrollMax,
+    screenBudget: totalBudget,
+    priorityRegionIds: Array.from(buttonRegionIds),
   };
 }

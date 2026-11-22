@@ -87,6 +87,17 @@ export const IMAGE_PRESETS: ImagePreset[] = [
   },
 ];
 
+/** The demo's layout padding: keeps clear of its top bar and the composer dock at the bottom. */
+export function demoLayoutPadding(width: number, height: number) {
+  const compact = width < 640;
+  return {
+    top: Math.min(compact ? 66 : 80, Math.max(46, height * 0.13)),
+    bottom: Math.min(compact ? 150 : 166, Math.max(92, height * 0.27)),
+    left: compact ? 16 : 36,
+    right: compact ? 16 : 36,
+  };
+}
+
 /**
  * Resolves layout `<Image src="...">` values for the demo: preset names ("cutout", "orb", "peaks"…),
  * "uploaded"/"current" for the active image, otherwise a URL. Unknown names fall back to the first preset.

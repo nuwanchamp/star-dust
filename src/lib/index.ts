@@ -8,6 +8,12 @@ export {
   type StarDustCallbacks,
   type MotionMetrics,
   type TargetMode,
+  type LayoutOverflow,
+  type LayoutPadding,
+  type LayoutPaddingValue,
+  type LayoutPaddingBox,
+  type LayoutWindowMode,
+  type LayoutBandBounds,
 } from './StarDust';
 export { PALETTE_THEMES, type PaletteThemeMeta } from '../engine/dustAtlas';
 export { DEFAULT_IMAGE_TUNING } from '../engine/imageSampler';

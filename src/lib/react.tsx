@@ -2,6 +2,9 @@ import { type CSSProperties, useEffect, useRef } from 'react';
 import {
   StarDust,
   type StarDustCallbacks,
+  type LayoutOverflow,
+  type LayoutPadding,
+  type LayoutWindowMode,
   type StarDustOptions,
   type TargetMode,
 } from './StarDust';
@@ -23,6 +26,22 @@ export interface DustCanvasProps extends StarDustCallbacks {
   layoutLeftInset?: number;
   collapsedMindMapIds?: Set<string>;
   resolveLayoutImage?: StarDustOptions['resolveLayoutImage'];
+  /** See `StarDustOptions.layoutOverflow`. Default `'scroll'`. */
+  layoutOverflow?: LayoutOverflow;
+  /** See `StarDustOptions.layoutMinFontSize`. Default 14. */
+  layoutMinFontSize?: number;
+  /** See `StarDustOptions.layoutPadding`. */
+  layoutPadding?: LayoutPadding;
+  /** See `StarDustOptions.layoutParticleBudget`. */
+  layoutParticleBudget?: number;
+  /** See `StarDustOptions.layoutScrollTrail`. Default 0 (rigid). */
+  layoutScrollTrail?: number;
+  /** See `StarDustOptions.layoutWindow`. Default `'auto'`. */
+  layoutWindow?: LayoutWindowMode;
+  /** See `StarDustOptions.layoutScrollHint`. Default `true`. */
+  layoutScrollHint?: boolean;
+  /** See `StarDustOptions.layoutAutoDissolve`. Default `false`. */
+  layoutAutoDissolve?: boolean;
   isFreeDrift?: boolean;
   physics?: Partial<PhysicsConfig>;
   ripple?: Partial<RippleConfig>;
@@ -93,4 +112,4 @@ export function DustCanvas({
 }
 
 export { StarDust };
-export type { StarDustCallbacks, TargetMode };
+export type { StarDustCallbacks, TargetMode, LayoutOverflow, LayoutPadding, LayoutWindowMode };
