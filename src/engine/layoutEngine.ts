@@ -3,6 +3,14 @@ import {
   getImageSourceBounds,
   sampleImageIntoBox,
 } from './imageSampler';
+import {
+  type MeasuredMindMapData,
+  type MindMapContext,
+  type MindMapFit,
+  type MindMapTreeItem,
+  layoutMindMap,
+  wrapTextLines,
+} from './mindMapLayout';
 import type { SampledPoint } from './textSampler';
 import type {
   DensityPreset,
@@ -66,55 +74,6 @@ interface MeasuredCodeData {
   padY: number;
 }
 
-interface MindMapTreeItem {
-  id: string;
-  label: string;
-  depth: number;
-  collapsedAttr: boolean;
-  attrs: Record<string, string>;
-  children: MindMapTreeItem[];
-}
-
-interface MindMapLaidOutNode {
-  id: string;
-  label: string;
-  lines: string[];
-  depth: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  fontSize: number;
-  lineHeight: number;
-  fontFamily: string;
-  fontWeight: number;
-  padX: number;
-  padY: number;
-  badgeText: string;
-  badgeW: number;
-  dir: 1 | -1 | 0;
-  totalChildCount: number;
-  hiddenDescendantCount: number;
-  isCollapsed: boolean;
-  attrs: Record<string, string>;
-}
-
-interface MindMapEdge {
-  fromId: string;
-  toId: string;
-  childDepth: number;
-  x0: number;
-  y0: number;
-  x1: number;
-  y1: number;
-}
-
-interface MeasuredMindMapData {
-  layout: 'radial' | 'tree';
-  nodes: MindMapLaidOutNode[];
-  edges: MindMapEdge[];
-}
-
 interface MeasuredLayoutNode {
   node: LayoutNode;
   intrinsicWidth: number;
@@ -148,6 +107,10 @@ export interface LayoutSceneResult {
    */
   screenBudget: number;
   priorityRegionIds: number[];
+  /** Mind map nodes shown collapsed (so a click knows whether to open or close). */
+  mindMapCollapsedIds: string[];
+  /** User-opened mind map nodes that were closed to make room for a newer one. */
+  mindMapDroppedExpansions: string[];
 }
 
 export interface LayoutPaddingBox {
@@ -162,7 +125,17 @@ export type LayoutOverflow = 'scroll' | 'fit';
 export interface LayoutSceneOptions {
   /** Extra space reserved on the left (added to padding.left). */
   leftInset?: number;
+  /** App-controlled mind map toggles (XOR with markup `collapsed`); disables mind map auto-fit. */
   collapsedMindMapIds?: Set<string>;
+  /** Mind map nodes the user opened (value: recency) / closed, when the engine manages collapse state. */
+  mindMapExpanded?: Map<string, number>;
+  mindMapCollapsed?: Set<string>;
+  /** 'collapse' (default): collapse levels until a mind map fits at a readable size. 'shrink': old behavior. */
+  mindMapFit?: MindMapFit;
+  /** Current page of mind map branches whose children are paged (engine-managed). */
+  mindMapPages?: Map<string, number>;
+  /** Largest factor a mind map that fits may be enlarged by to use free space (1 = never). Default 1.6. */
+  mindMapMaxScale?: number;
   /** Space kept clear around the layout. Default: 32px (16px below 640px wide). */
   padding?: LayoutPaddingBox;
   /** 'scroll': keep text legible and let it scroll. 'fit': shrink everything to fit. Default 'scroll'. */
@@ -275,41 +248,6 @@ export function defaultLayoutImageUrl(
     return currentImageSrc;
   }
   return key;
-}
-
-function wrapTextLines(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number
-): string[] {
-  const paragraphs = text.split(/\n+/);
-  const lines: string[] = [];
-
-  for (const para of paragraphs) {
-    const clean = para.replace(/\s+/g, ' ').trim();
-    if (!clean) continue;
-
-    const words = clean.split(' ');
-    let currentLine = '';
-
-    for (const word of words) {
-      const candidate = currentLine ? `${currentLine} ${word}` : word;
-      if (ctx.measureText(candidate).width <= maxWidth) {
-        currentLine = candidate;
-      } else {
-        if (currentLine) {
-          lines.push(currentLine);
-          currentLine = word;
-        } else {
-          lines.push(word);
-          currentLine = '';
-        }
-      }
-    }
-    if (currentLine) lines.push(currentLine);
-  }
-
-  return lines.length > 0 ? lines : [''];
 }
 
 function wrapCodeLines(
@@ -562,7 +500,7 @@ function cleanMindMapOutlineLabel(line: string): string {
     .trim();
 }
 
-function extractMindMapTree(node: LayoutNode): MindMapTreeItem {
+export function extractMindMapTree(node: LayoutNode): MindMapTreeItem {
   const mapKey = (node.attrs.id || `mm${node.line}`).trim();
   const branchChildren = node.children.filter((c) => c.tag === 'Branch');
 
@@ -670,14 +608,6 @@ function extractMindMapTree(node: LayoutNode): MindMapTreeItem {
   return root;
 }
 
-function countDescendants(item: MindMapTreeItem): number {
-  let count = 0;
-  for (const ch of item.children) {
-    count += 1 + countDescendants(ch);
-  }
-  return count;
-}
-
 function measureNode(
   node: LayoutNode,
   measureCtx: CanvasRenderingContext2D,
@@ -687,7 +617,7 @@ function measureNode(
   imageCache: Map<string, HTMLImageElement>,
   resolveImage: LayoutImageResolver,
   compact: boolean,
-  collapsedMindMapIds?: Set<string>
+  mindMap: MindMapContext
 ): MeasuredLayoutNode {
   if (node.tag === 'Heading') {
     const fontStyle = resolveFontStyle(node.attrs.font, defaultFontStyle);
@@ -1076,244 +1006,24 @@ function measureNode(
   }
 
   if (node.tag === 'MindMap') {
-    const layoutMode: 'radial' | 'tree' =
-      (node.attrs.layout || 'radial').toLowerCase() === 'tree' ? 'tree' : 'radial';
-    const fontStyle = resolveFontStyle(node.attrs.font, 'sans');
-    const fontFamily = FONT_FAMILY_MAP[fontStyle];
-    const siblingGap = parseNum(node.attrs.gap, compact ? 10 : 14);
-    const levelGap = parseNum(
-      node.attrs.levelGap || node.attrs.colGap,
-      compact ? 34 : 54
+    const result = layoutMindMap(
+      extractMindMapTree(node),
+      {
+        layout: (node.attrs.layout || 'radial').toLowerCase() === 'tree' ? 'tree' : 'radial',
+        fontFamily: FONT_FAMILY_MAP[resolveFontStyle(node.attrs.font, 'sans')],
+        siblingGap: parseNum(node.attrs.gap, compact ? 10 : 14),
+        levelGap: parseNum(node.attrs.levelGap || node.attrs.colGap, compact ? 34 : 54),
+        branchGap: parseNum(node.attrs.branchGap, compact ? 16 : 22),
+        compact,
+      },
+      mindMap,
+      measureCtx
     );
-    const branchGap = parseNum(node.attrs.branchGap, compact ? 16 : 22);
-
-    const rootTree = extractMindMapTree(node);
-
-    interface WorkingNode {
-      item: MindMapTreeItem;
-      node: MindMapLaidOutNode;
-      subtreeH: number;
-      children: WorkingNode[];
-    }
-
-    const buildWorking = (item: MindMapTreeItem): WorkingNode => {
-      const hasChildren = item.children.length > 0;
-      const isCollapsed =
-        hasChildren &&
-        (item.collapsedAttr !== (collapsedMindMapIds?.has(item.id) ?? false));
-      const hiddenDescendantCount = isCollapsed ? countDescendants(item) : 0;
-
-      const isRoot = item.depth === 0;
-      const isPrimary = item.depth === 1;
-      const fontSize = isRoot
-        ? compact
-          ? 16
-          : 19
-        : isPrimary
-        ? compact
-          ? 13.5
-          : 15
-        : compact
-        ? 12
-        : 13.5;
-      const fontWeight = isRoot || isPrimary ? 600 : 500;
-      const padX = isRoot ? (compact ? 14 : 18) : isPrimary ? (compact ? 10 : 13) : (compact ? 8 : 10);
-      const padY = isRoot ? (compact ? 8 : 10) : isPrimary ? (compact ? 6 : 7) : (compact ? 4 : 5);
-      const maxLabelW = isRoot ? (compact ? 145 : 200) : isPrimary ? (compact ? 125 : 175) : (compact ? 115 : 165);
-
-      measureCtx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
-      const lines = wrapTextLines(measureCtx, item.label, maxLabelW);
-      const lineHeight = fontSize * 1.28;
-      const labelW = Math.max(...lines.map((l) => measureCtx.measureText(l).width), 24);
-
-      const badgeText = isCollapsed
-        ? `+${hiddenDescendantCount}`
-        : hasChildren
-        ? '−'
-        : '';
-      let badgeW = 0;
-      if (badgeText) {
-        const badgeFontSize = Math.max(10.5, fontSize * 0.78);
-        measureCtx.font = `600 ${badgeFontSize}px ${fontFamily}`;
-        badgeW = Math.ceil(measureCtx.measureText(badgeText).width) + 10;
-      }
-
-      const width = Math.ceil(labelW + padX * 2 + badgeW);
-      const height = Math.ceil(lines.length * lineHeight + padY * 2);
-
-      const visibleChildren = isCollapsed ? [] : item.children.map(buildWorking);
-      const childrenSumH =
-        visibleChildren.reduce((acc, c) => acc + c.subtreeH, 0) +
-        Math.max(0, visibleChildren.length - 1) * siblingGap;
-      const subtreeH = Math.max(height, childrenSumH);
-
-      return {
-        item,
-        node: {
-          id: item.id,
-          label: item.label,
-          lines,
-          depth: item.depth,
-          x: 0,
-          y: 0,
-          width,
-          height,
-          fontSize,
-          lineHeight,
-          fontFamily,
-          fontWeight,
-          padX,
-          padY,
-          badgeText,
-          badgeW,
-          dir: 0,
-          totalChildCount: item.children.length,
-          hiddenDescendantCount,
-          isCollapsed,
-          attrs: item.attrs,
-        },
-        subtreeH,
-        children: visibleChildren,
-      };
-    };
-
-    const rootW = buildWorking(rootTree);
-    const flatNodes: MindMapLaidOutNode[] = [];
-    const edges: MindMapEdge[] = [];
-
-    const placeSubtree = (
-      wn: WorkingNode,
-      anchorX: number,
-      centerY: number,
-      dir: 1 | -1
-    ): void => {
-      wn.node.dir = dir;
-      wn.node.x = dir === 1 ? anchorX : anchorX - wn.node.width;
-      wn.node.y = centerY - wn.node.height * 0.5;
-      flatNodes.push(wn.node);
-
-      if (wn.children.length === 0) return;
-
-      const totalChildrenH =
-        wn.children.reduce((acc, c) => acc + c.subtreeH, 0) +
-        Math.max(0, wn.children.length - 1) * siblingGap;
-      let curY = centerY - totalChildrenH * 0.5;
-      const childAnchorX =
-        dir === 1 ? wn.node.x + wn.node.width + levelGap : wn.node.x - levelGap;
-
-      for (const ch of wn.children) {
-        const chCenterY = curY + ch.subtreeH * 0.5;
-        placeSubtree(ch, childAnchorX, chCenterY, dir);
-        edges.push({
-          fromId: wn.node.id,
-          toId: ch.node.id,
-          childDepth: ch.node.depth,
-          x0: dir === 1 ? wn.node.x + wn.node.width : wn.node.x,
-          y0: wn.node.y + wn.node.height * 0.5,
-          x1: dir === 1 ? ch.node.x : ch.node.x + ch.node.width,
-          y1: ch.node.y + ch.node.height * 0.5,
-        });
-        curY += ch.subtreeH + siblingGap;
-      }
-    };
-
-    if (layoutMode === 'tree') {
-      rootW.node.dir = 1;
-      placeSubtree(rootW, 0, rootW.subtreeH * 0.5, 1);
-    } else {
-      rootW.node.dir = 0;
-      rootW.node.x = -rootW.node.width * 0.5;
-      rootW.node.y = -rootW.node.height * 0.5;
-      flatNodes.push(rootW.node);
-
-      const rightBranches: WorkingNode[] = [];
-      const leftBranches: WorkingNode[] = [];
-      let rightSum = 0;
-      let leftSum = 0;
-
-      // Distribute depth-1 branches cleanly across right & left hemispheres weighted by subtree height
-      rootW.children.forEach((branch, idx) => {
-        if (idx % 2 === 0 ? rightSum <= leftSum + 24 : rightSum < leftSum - 24) {
-          rightBranches.push(branch);
-          rightSum += branch.subtreeH + branchGap;
-        } else {
-          leftBranches.push(branch);
-          leftSum += branch.subtreeH + branchGap;
-        }
-      });
-
-      const placeHemisphere = (branches: WorkingNode[], dir: 1 | -1) => {
-        if (branches.length === 0) return;
-        const totalH =
-          branches.reduce((acc, b) => acc + b.subtreeH, 0) +
-          Math.max(0, branches.length - 1) * branchGap;
-        let curY = -totalH * 0.5;
-
-        for (const b of branches) {
-          const bCenterY = curY + b.subtreeH * 0.5;
-          const vNorm = totalH > 1 ? clamp(bCenterY / (totalH * 0.5), -1, 1) : 0;
-          const arcGap = levelGap * (1.22 - 0.28 * vNorm * vNorm);
-          const anchorX =
-            dir === 1
-              ? rootW.node.width * 0.5 + arcGap
-              : -rootW.node.width * 0.5 - arcGap;
-
-          placeSubtree(b, anchorX, bCenterY, dir);
-          edges.push({
-            fromId: rootW.node.id,
-            toId: b.node.id,
-            childDepth: b.node.depth,
-            x0: dir === 1 ? rootW.node.x + rootW.node.width : rootW.node.x,
-            y0: clamp(
-              bCenterY * 0.24,
-              -rootW.node.height * 0.26,
-              rootW.node.height * 0.26
-            ),
-            x1: dir === 1 ? b.node.x : b.node.x + b.node.width,
-            y1: b.node.y + b.node.height * 0.5,
-          });
-          curY += b.subtreeH + branchGap;
-        }
-      };
-
-      placeHemisphere(rightBranches, 1);
-      placeHemisphere(leftBranches, -1);
-    }
-
-    // Normalize coordinates so bounding box starts at (0, 0)
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const n of flatNodes) {
-      minX = Math.min(minX, n.x);
-      minY = Math.min(minY, n.y);
-      maxX = Math.max(maxX, n.x + n.width);
-      maxY = Math.max(maxY, n.y + n.height);
-    }
-    const padOuter = 4;
-    const shiftX = -minX + padOuter;
-    const shiftY = -minY + padOuter;
-    for (const n of flatNodes) {
-      n.x += shiftX;
-      n.y += shiftY;
-    }
-    for (const e of edges) {
-      e.x0 += shiftX;
-      e.y0 += shiftY;
-      e.x1 += shiftX;
-      e.y1 += shiftY;
-    }
-
     return {
       node,
-      intrinsicWidth: Math.max(120, Math.ceil(maxX - minX + padOuter * 2)),
-      intrinsicHeight: Math.max(60, Math.ceil(maxY - minY + padOuter * 2)),
-      mindMapData: {
-        layout: layoutMode,
-        nodes: flatNodes,
-        edges,
-      },
+      intrinsicWidth: result.width,
+      intrinsicHeight: result.height,
+      mindMapData: result.data,
       children: [],
     };
   }
@@ -1326,19 +1036,24 @@ function measureNode(
     : maxAvailW;
   const innerAvailW = Math.max(80, containerMaxW - pad * 2);
 
-  const measuredChildren = node.children.map((child) =>
-    measureNode(
-      child,
-      measureCtx,
-      innerAvailW,
-      Math.max(96, maxAvailH - pad * 2),
-      defaultFontStyle,
-      imageCache,
-      resolveImage,
-      compact,
-      collapsedMindMapIds
-    )
-  );
+  const innerAvailH = Math.max(96, maxAvailH - pad * 2);
+  const measureChild = (child: LayoutNode, mm: MindMapContext) =>
+    measureNode(child, measureCtx, innerAvailW, innerAvailH, defaultFontStyle, imageCache, resolveImage, compact, mm);
+
+  // In a column, a mind map gets the height its siblings leave (e.g. a row of buttons below it), so it
+  // folds/pages to fit the screen together with them instead of making the layout scroll.
+  const mindMapCount = node.tag === 'Row' ? 0 : node.children.filter((c) => c.tag === 'MindMap').length;
+  let measuredChildren: MeasuredLayoutNode[];
+  if (mindMapCount === 0) {
+    measuredChildren = node.children.map((child) => measureChild(child, mindMap));
+  } else {
+    const others = node.children.map((child) => (child.tag === 'MindMap' ? null : measureChild(child, mindMap)));
+    const othersH =
+      others.reduce((acc, m) => acc + (m ? m.intrinsicHeight : 0), 0) + Math.max(0, node.children.length - 1) * gap;
+    const mapMaxH = Math.max(120, Math.min(mindMap.maxH, (innerAvailH - othersH) / mindMapCount));
+    const mapCtx: MindMapContext = { ...mindMap, maxH: mapMaxH };
+    measuredChildren = node.children.map((child, i) => others[i] ?? measureChild(child, mapCtx));
+  }
 
   if (node.tag === 'Row') {
     // Auto-wrap if requested or if a wide horizontal row exceeds narrow screens
@@ -1721,6 +1436,8 @@ export function sampleLayoutScene(
     scrollMax: 0,
     screenBudget: 0,
     priorityRegionIds: [],
+    mindMapCollapsedIds: [],
+    mindMapDroppedExpansions: [],
   };
   if (!root || viewportWidth < 120 || viewportHeight < 120) {
     return empty;
@@ -1754,6 +1471,21 @@ export function sampleLayoutScene(
   const safeW = Math.max(160, usableRight - usableLeft);
   const safeH = Math.max(96, viewportHeight - topReserve - bottomReserve);
 
+  const totalBudget = Math.max(1000, Math.round(particleBudget ?? LAYOUT_BUDGET_BY_DENSITY[density]));
+  const mindMap: MindMapContext = {
+    controlledIds: collapsedMindMapIds,
+    expanded: sceneOptions.mindMapExpanded,
+    collapsed: sceneOptions.mindMapCollapsed,
+    pages: sceneOptions.mindMapPages,
+    fit: sceneOptions.mindMapFit ?? 'collapse',
+    maxW: safeW,
+    maxH: safeH,
+    maxScale: sceneOptions.mindMapMaxScale ?? 1.6,
+    budget: totalBudget,
+    density,
+    collapsedOut: new Set(),
+    droppedOut: new Set(),
+  };
   const measured = measureNode(
     root,
     measureCtx,
@@ -1763,7 +1495,7 @@ export function sampleLayoutScene(
     imageCache,
     resolveImage,
     compact,
-    collapsedMindMapIds
+    mindMap
   );
 
   // Uniformly scale down the scene if it exceeds the safe viewport. In 'scroll' mode the height fit
@@ -1838,7 +1570,6 @@ export function sampleLayoutScene(
     }
   }
 
-  const totalBudget = Math.max(1000, Math.round(particleBudget ?? LAYOUT_BUDGET_BY_DENSITY[density]));
   const hitRegions: LayoutHitRegion[] = [];
   const rippleRegions: RippleRegion[] = [];
   const buttonRegionIds = new Set<number>();
@@ -1915,7 +1646,7 @@ export function sampleLayoutScene(
           wavelength: mmRipple.wavelength,
         });
 
-        if (mmNode.totalChildCount > 0) {
+        if (mmNode.totalChildCount > 0 || mmNode.pager) {
           const hitPad = 4;
           hitRegions.push({
             id: hitRegions.length,
@@ -1924,7 +1655,9 @@ export function sampleLayoutScene(
             y: ny - hitPad,
             width: nw + hitPad * 2,
             height: nh + hitPad * 2,
-            action: `mindmap:toggle:${mmNode.id}`,
+            action: mmNode.pager
+              ? `mindmap:page:${mmNode.pagerOf}:${mmNode.pager}`
+              : `mindmap:toggle:${mmNode.id}`,
             label: mmNode.label,
           });
         }
@@ -1961,24 +1694,26 @@ export function sampleLayoutScene(
           nodeRegionId
         );
 
-        const textBoost = mmNode.depth === 0 ? 0.96 : mmNode.depth === 1 ? 0.88 : 0.82;
+        // Match button/heading brightness so node labels read as clearly as the rest of the layout.
+        const textBoost = mmNode.depth === 0 ? 1 : mmNode.depth === 1 ? 0.97 : 0.92;
         for (const pt of labelPts) {
-          pt.weight = clamp((pt.weight ?? 0.84) * textBoost, 0.4, 1);
+          pt.weight = clamp((pt.weight ?? 0.84) * textBoost, 0.5, 1);
           textAndControlPoints.push(pt);
         }
 
         // Tiered node frames: bright capsule rim for root/collapsed hubs, light frame for depth-1, sleek underline for leaves
-        if (mmNode.depth <= 1 || mmNode.isCollapsed) {
+        if (mmNode.depth <= 1 || mmNode.isCollapsed || mmNode.pager) {
+          // Dense enough to read as a solid outline (like buttons), not a dotted one.
           const borderStep =
             mmNode.depth === 0
               ? density === 'dense'
-                ? 1.9
-                : 2.5
+                ? 1.5
+                : 1.9
               : density === 'dense'
-              ? 2.4
-              : 3.1;
+              ? 1.8
+              : 2.2;
           const borderWeight =
-            mmNode.depth === 0 ? 0.92 : mmNode.isCollapsed ? 0.88 : 0.72;
+            mmNode.depth === 0 ? 0.95 : mmNode.isCollapsed ? 0.92 : 0.8;
           emitParticleRoundedRect(
             textAndControlPoints,
             nx + 1.5,
@@ -1991,7 +1726,7 @@ export function sampleLayoutScene(
             nodeRegionId
           );
         } else {
-          const lineStep = density === 'dense' ? 2.1 : 2.8;
+          const lineStep = density === 'dense' ? 1.8 : 2.2;
           emitParticleLine(
             textAndControlPoints,
             nx + 4,
@@ -1999,7 +1734,7 @@ export function sampleLayoutScene(
             nx + nw - 4,
             ny + nh - 1.5,
             lineStep,
-            0.58,
+            0.7,
             0.8,
             nodeRegionId
           );
@@ -2608,5 +2343,7 @@ export function sampleLayoutScene(
     scrollMax,
     screenBudget: totalBudget,
     priorityRegionIds: Array.from(buttonRegionIds),
+    mindMapCollapsedIds: Array.from(mindMap.collapsedOut),
+    mindMapDroppedExpansions: Array.from(mindMap.droppedOut),
   };
 }

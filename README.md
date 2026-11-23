@@ -12,8 +12,8 @@ This repo contains two things:
 Install a tagged release from GitHub. Each release tag includes the built files, so no build step runs in your project:
 
 ```sh
-bun add github:nuwanchamp/star-dust#v0.2.0
-# or: npm install github:nuwanchamp/star-dust#v0.2.0
+bun add github:nuwanchamp/star-dust#v0.3.0
+# or: npm install github:nuwanchamp/star-dust#v0.3.0
 ```
 
 Then import it as `@encenlab/star-dust`. To upgrade, change the tag. See [CHANGELOG.md](CHANGELOG.md) for what changed.
@@ -103,6 +103,25 @@ dust.layoutHitRegions;               // button rects at the current scroll, e.g.
 
 A higher budget means crisper text and more work per frame. On low-end phones, `physics: { density: 'sparse' }` or a lower `layoutParticleBudget` keeps long layouts smooth.
 
+#### Mind maps
+
+A `<MindMap>` stays readable and whole however big it gets. It never scrolls and is never cut off. It's limited by both the screen (minus whatever sits next to it in the same column, such as a row of buttons) and the particle budget (`layoutParticleBudget`). When it doesn't fit, branches fold one at a time to a `+N` badge, deepest first, then larger branches before smaller ones. The root and first level stay visible.
+
+- **Opening a branch:** click a node (or Tab to it and press Enter) to open or close it. Opening a branch folds the **opposite side** of the map first, then other branches on its own side, then deeper levels inside the branch itself. The branch you opened, and the path to it, always stay open. Branches keep their side of the map as others open and close.
+- **Too many children:** if an opened branch has more direct children than fit, they show a page at a time. A `+N more ▸` node shows the next set and `◂ previous` goes back.
+- **Narrow screens:** a radial map switches to a tree, which only grows rightward.
+
+A map that fits with room to spare is enlarged to use it, because bigger particle labels are crisper. It grows up to `mindMapMaxScale` (1.6× by default) and uses at most about 92% of the width and 70% of the height, so content around it still fits.
+
+```ts
+dust.setOptions({
+  mindMapFit: 'collapse',   // default; 'shrink' = scale the whole map down instead
+  mindMapMaxScale: 1.6,     // 1 = keep the natural size
+});
+```
+
+The engine remembers which nodes are open, and resets that when `layoutAst` changes. To manage it yourself, pass `collapsedMindMapIds`: a set of node ids toggled relative to the markup's `collapsed` attribute. Then handle `onLayoutAction('mindmap:toggle:<id>')` in your app. Auto-collapse is off in that mode.
+
 `<Image src="...">` values in layout markup are used as URLs. `src="current"`, or no `src`, uses the instance's `imageSrc`. To map your own names to images, pass `resolveLayoutImage`:
 
 ```ts
@@ -130,6 +149,7 @@ bun run build:lib    # → dist-lib/ (ESM + .d.ts)
 bun run lint         # typecheck app, library and tests
 bun run test         # unit tests (layout parser, layout window, scroll hints)
 bun run test:smoke   # browser smoke test: starts Vite, drives your installed Chrome
+                     # (tests/smoke/calibrate.html compares the mind map particle estimate with real counts)
                      # (set CHROME_PATH to use another Chromium)
 ```
 

@@ -60,7 +60,6 @@ export default function App() {
   );
   const [layoutDiagnostic, setLayoutDiagnostic] = useState<LayoutDiagnostic | null>(null);
   const [layoutEditorOpen, setLayoutEditorOpen] = useState<boolean>(false);
-  const [collapsedMindMapIds, setCollapsedMindMapIds] = useState<Set<string>>(() => new Set());
   const [isDesktopViewport, setIsDesktopViewport] = useState<boolean>(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 768 : true
   );
@@ -382,7 +381,6 @@ export default function App() {
     setActiveLayoutPresetId(preset.id);
     setActiveLayoutLabel(preset.label);
     setLayoutMarkup(preset.markup);
-    setCollapsedMindMapIds(new Set());
     const parsed = parseLayoutMarkup(preset.markup);
     if (parsed.root) {
       setLayoutAst(parsed.root);
@@ -422,19 +420,8 @@ export default function App() {
   const handleLayoutAction = (action: string, _region: LayoutHitRegion) => {
     wakeChrome();
     const rawTrimmed = action.trim();
+    // Mind map expand/collapse is handled by the engine (built-in collapse state + auto-fit).
     if (rawTrimmed.toLowerCase().startsWith('mindmap:toggle:')) {
-      const nodeId = rawTrimmed.slice('mindmap:toggle:'.length);
-      if (nodeId) {
-        setCollapsedMindMapIds((prev) => {
-          const next = new Set(prev);
-          if (next.has(nodeId)) {
-            next.delete(nodeId);
-          } else {
-            next.add(nodeId);
-          }
-          return next;
-        });
-      }
       return;
     }
     const clean = rawTrimmed.toLowerCase();
@@ -716,7 +703,6 @@ export default function App() {
         layoutLeftInset={
           interactionMode === 'layout' && layoutEditorOpen && isDesktopViewport ? 396 : 0
         }
-        collapsedMindMapIds={collapsedMindMapIds}
         isFreeDrift={isFreeDrift}
         scatterVersion={scatterVersion}
         physics={physics}

@@ -5,6 +5,7 @@ import {
   type LayoutOverflow,
   type LayoutPadding,
   type LayoutWindowMode,
+  type MindMapFit,
   type StarDustOptions,
   type TargetMode,
 } from './StarDust';
@@ -42,6 +43,10 @@ export interface DustCanvasProps extends StarDustCallbacks {
   layoutScrollHint?: boolean;
   /** See `StarDustOptions.layoutAutoDissolve`. Default `false`. */
   layoutAutoDissolve?: boolean;
+  /** See `StarDustOptions.mindMapFit`. Default `'collapse'`. */
+  mindMapFit?: MindMapFit;
+  /** See `StarDustOptions.mindMapMaxScale`. Default 1.6. */
+  mindMapMaxScale?: number;
   isFreeDrift?: boolean;
   physics?: Partial<PhysicsConfig>;
   ripple?: Partial<RippleConfig>;
@@ -112,4 +117,4 @@ export function DustCanvas({
 }
 
 export { StarDust };
-export type { StarDustCallbacks, TargetMode, LayoutOverflow, LayoutPadding, LayoutWindowMode };
+export type { StarDustCallbacks, TargetMode, LayoutOverflow, LayoutPadding, LayoutWindowMode, MindMapFit };

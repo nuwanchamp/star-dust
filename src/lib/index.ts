@@ -14,6 +14,7 @@ export {
   type LayoutPaddingBox,
   type LayoutWindowMode,
   type LayoutBandBounds,
+  type MindMapFit,
 } from './StarDust';
 export { PALETTE_THEMES, type PaletteThemeMeta } from '../engine/dustAtlas';
 export { DEFAULT_IMAGE_TUNING } from '../engine/imageSampler';

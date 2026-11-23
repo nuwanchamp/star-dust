@@ -13,6 +13,28 @@ const LONG = `<Col gap="12" align="start"><Heading size="lg" align="left">Long l
 ${Array.from({ length: 8 }, (_, i) => job(i)).join('')}
 <Row gap="12"><Button action="first">First</Button><Button action="second">Second</Button></Row></Col>`;
 
+// 5 branches × 4 × 3: too big for one screen at a readable size.
+const BIG_MAP = `<Col align="center"><MindMap layout="radial">
+Career Overview
+${Array.from({ length: 5 }, (_, b) => `  - Branch ${b + 1} topic
+${Array.from({ length: 4 }, (_, c) => `    - Sub topic ${b + 1}.${c + 1}
+${Array.from({ length: 3 }, (_, d) => `      - Detail ${b + 1}.${c + 1}.${d + 1}`).join('\n')}`).join('\n')}`).join('\n')}
+</MindMap></Col>`;
+
+// A branch with 19 direct items (nothing below them to fold) above a row of buttons.
+const PAGED_MAP = `<Col gap="24" align="center"><MindMap layout="radial">
+Profile
+  - Experience
+${Array.from({ length: 19 }, (_, i) => `    - Role highlight ${i + 1}`).join('\n')}
+  - Architecture
+    - Pattern 1
+    - Pattern 2
+  - Skills
+    - Skill 1
+    - Skill 2
+</MindMap>
+<Row gap="16"><Button action="back">Back</Button><Button action="gust">Gust</Button></Row></Col>`;
+
 let failures = 0;
 const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? `  (${detail})` : ''}`);
@@ -84,6 +106,57 @@ try {
     return { max: window.dust.scrollHeight, prevented: ev.defaultPrevented };
   });
   check('text mode is not scrollable and leaves the wheel alone', text.max === 0 && !text.prevented, JSON.stringify(text));
+
+  // 5. Mind maps: collapse to fit, open on click / Enter (engine-managed state).
+  for (const [w, h] of [[1280, 800], [390, 844]]) {
+    await page.setViewportSize({ width: w, height: h });
+    await page.evaluate((m) => window.make(m), BIG_MAP);
+    await page.waitForFunction(() => window.dust.layoutHitRegions.length > 0, null, { timeout: 15000 });
+    const s = await page.evaluate(() => ({ collapsed: window.dust.mmShownCollapsed.size, nodes: window.dust.layoutHitRegions.length }));
+    check(`big mind map collapses to fit at ${w}px`, s.collapsed > 0, JSON.stringify(s));
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate((m) => { window.actions = []; window.make(m); }, BIG_MAP);
+  await page.waitForFunction(() => window.dust.layoutHitRegions.length > 0, null, { timeout: 15000 });
+  const target = await page.evaluate(() => {
+    const r = window.dust.layoutHitRegions.find((h) => window.dust.mmShownCollapsed.has(h.action.slice('mindmap:toggle:'.length)));
+    return r && { id: r.action.slice('mindmap:toggle:'.length), x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.click(target.x, target.y);
+  await page.waitForFunction((id) => !window.dust.mmShownCollapsed.has(id), target.id, { timeout: 10000 });
+  check('clicking a collapsed node opens it', (await page.evaluate(() => window.actions)).some((a) => a.startsWith('mindmap:toggle:')));
+  await page.focus('#c');
+  await page.keyboard.press('Tab');
+  const focused = await page.evaluate(() => window.dust.kbFocusId);
+  const before = await page.evaluate(() => [...window.dust.mmShownCollapsed].sort().join());
+  await page.keyboard.press('Enter');
+  await page.waitForFunction((b) => [...window.dust.mmShownCollapsed].sort().join() !== b, before, { timeout: 10000 });
+  check('Enter on a focused mind map node toggles it', focused >= 0);
+
+  // 6. Mind maps stay within budget and screen: big branches page instead of scrolling.
+  await page.setViewportSize({ width: 1400, height: 720 });
+  await page.evaluate((m) => window.make(m), PAGED_MAP);
+  await page.waitForFunction(() => window.dust.layoutHitRegions.length > 0, null, { timeout: 15000 });
+  const clickRegion = async (pred) => {
+    const r = await page.evaluate((src) => {
+      const f = new Function('h', `return ${src}`);
+      const h = window.dust.layoutHitRegions.find((x) => f(x));
+      return h && { x: h.x + h.width / 2, y: h.y + h.height / 2 };
+    }, pred);
+    await page.mouse.click(r.x, r.y);
+    await page.mouse.move(2, 2);
+  };
+  check('mind map loads without scrolling', (await page.evaluate(() => window.dust.scrollHeight)) === 0);
+  await clickRegion("h.label === 'Experience'");
+  await page.waitForFunction(() => window.dust.layoutHitRegions.some((h) => h.action.endsWith(':next')), null, { timeout: 15000 });
+  const opened = await page.evaluate(() => ({ scroll: window.dust.scrollHeight, more: window.dust.layoutHitRegions.find((h) => h.action.endsWith(':next'))?.label }));
+  check('opening a 19-item branch pages it instead of scrolling', opened.scroll === 0 && /^\+\d+ more/.test(opened.more ?? ''), JSON.stringify(opened));
+  await clickRegion("h.action.endsWith(':next')");
+  await page.waitForFunction(() => window.dust.layoutHitRegions.some((h) => h.action.endsWith(':prev')), null, { timeout: 15000 });
+  check('"+N more" shows the next page (with "previous")', (await page.evaluate(() => window.dust.scrollHeight)) === 0);
+  await clickRegion("h.action.endsWith(':prev')");
+  await page.waitForFunction(() => !window.dust.layoutHitRegions.some((h) => h.action.endsWith(':prev')), null, { timeout: 15000 });
+  check('"previous" goes back to the first page', true);
 
   check('no page errors', errors.length === 0, errors.join(' | '));
 } finally {

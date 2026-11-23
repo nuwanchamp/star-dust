@@ -19,6 +19,7 @@ import {
   resizeParticlePool,
 } from '../engine/particlePool';
 import { type LayoutBandBounds, LayoutWindow, type LayoutWindowMode } from '../engine/layoutWindow';
+import type { MindMapFit } from '../engine/mindMapLayout';
 import { PerlinWindField } from '../engine/perlinNoise';
 import { ScrollHints } from '../engine/scrollHint';
 import {
@@ -51,7 +52,7 @@ export type TargetMode = 'text' | 'image' | 'layout';
 export type LayoutPaddingValue = number | Partial<LayoutPaddingBox>;
 /** Static padding, or a function of the canvas size (CSS px). */
 export type LayoutPadding = LayoutPaddingValue | ((width: number, height: number) => LayoutPaddingValue);
-export type { LayoutOverflow, LayoutPaddingBox, LayoutWindowMode, LayoutBandBounds };
+export type { LayoutOverflow, LayoutPaddingBox, LayoutWindowMode, LayoutBandBounds, MindMapFit };
 
 export interface MotionMetrics {
   particleCount: number;
@@ -97,7 +98,25 @@ export interface StarDustOptions extends StarDustCallbacks {
   layoutAst?: LayoutNode | null;
   /** Pixels reserved on the left in layout mode (e.g. for a side panel). */
   layoutLeftInset?: number;
+  /**
+   * Take over mind map expand/collapse: ids toggled relative to the markup's `collapsed` attribute.
+   * Leave undefined (default) and the engine manages it: clicking a node opens or closes it, and
+   * `mindMapFit` keeps the map readable. When set, your app must handle `mindmap:toggle:<id>` actions.
+   */
   collapsedMindMapIds?: Set<string>;
+  /**
+   * When a mind map is too big to show at a readable size: `'collapse'` (default) collapses its deepest
+   * levels (the root and first level always show; `+N` badges open them), closes older branches when a
+   * new one needs room, and on narrow screens switches a radial map to a tree. `'shrink'` scales it down
+   * to fit instead (the pre-0.3 behavior). Only applies when the engine manages collapse state.
+   */
+  mindMapFit?: MindMapFit;
+  /**
+   * A mind map that fits is enlarged to use free space (bigger labels are crisper), up to this factor,
+   * using at most ~92% of the width and ~70% of the height so content around it still fits.
+   * 1 = keep the natural size. Default 1.6.
+   */
+  mindMapMaxScale?: number;
   /**
    * What happens when a layout is taller than the canvas. `'scroll'` (default) keeps text at a
    * readable size (see `layoutMinFontSize`) and lets the wheel, trackpad or touch-drag scroll it.
@@ -177,6 +196,8 @@ type ResolvedOptions = Omit<StarDustOptions, 'physics' | 'ripple'> & {
   layoutWindow: LayoutWindowMode;
   layoutScrollHint: boolean;
   layoutAutoDissolve: boolean;
+  mindMapFit: MindMapFit;
+  mindMapMaxScale: number;
   freeDrift: boolean;
   physics: PhysicsConfig;
   ripple: RippleConfig;
@@ -221,6 +242,8 @@ const DEFAULTS: Omit<ResolvedOptions, keyof StarDustCallbacks> = {
   layoutWindow: 'auto',
   layoutScrollHint: true,
   layoutAutoDissolve: false,
+  mindMapFit: 'collapse',
+  mindMapMaxScale: 1.6,
   collapsedMindMapIds: undefined,
   freeDrift: false,
   physics: DEFAULT_PHYSICS,
@@ -450,6 +473,13 @@ export class StarDust {
   private hintHover = false;
   /** Layout button focused with the keyboard (its rippleRegionId), or -1. */
   private kbFocusId = -1;
+  /** Engine-managed mind map state: nodes the user opened (value: recency) / closed, and what is shown closed. */
+  private mmExpanded = new Map<string, number>();
+  private mmCollapsed = new Set<string>();
+  private mmShownCollapsed = new Set<string>();
+  /** Page shown for branches whose children are paged ("+N more ▸"). */
+  private mmPages = new Map<string, number>();
+  private mmClock = 0;
 
   private rafId = 0;
   private startTime = 0;
@@ -579,6 +609,8 @@ export class StarDust {
           o.layoutMinFontSize !== prev.layoutMinFontSize ||
           o.layoutParticleBudget !== prev.layoutParticleBudget ||
           o.layoutWindow !== prev.layoutWindow ||
+          o.mindMapFit !== prev.mindMapFit ||
+          o.mindMapMaxScale !== prev.mindMapMaxScale ||
           !samePadding(
             resolveLayoutPadding(o.layoutPadding, this.size.width, this.size.height),
             resolveLayoutPadding(prev.layoutPadding, this.size.width, this.size.height)
@@ -586,6 +618,12 @@ export class StarDust {
 
     if (o.layoutAst !== prev.layoutAst || o.targetMode !== prev.targetMode) {
       this.setKeyboardFocus(-1);
+    }
+    if (o.layoutAst !== prev.layoutAst) {
+      this.mmExpanded.clear();
+      this.mmCollapsed.clear();
+      this.mmShownCollapsed.clear();
+      this.mmPages.clear();
     }
     if (needsRetarget && this.supported) {
       this.refreshTargets();
@@ -767,7 +805,37 @@ export class StarDust {
       alpha: 0.42,
     });
     this.o.onSoundImpulse?.(0.7, (hit.x + hit.width * 0.5) / Math.max(1, this.size.width));
+    this.toggleMindMapNode(hit.action);
     this.o.onLayoutAction?.(hit.action, hit);
+  }
+
+  /**
+   * Engine-managed mind maps: `mindmap:toggle:<id>` opens or closes a node; `mindmap:page:<id>:next|prev`
+   * shows the next or previous set of a paged branch's children.
+   */
+  private toggleMindMapNode(action: string): void {
+    if (this.o.collapsedMindMapIds !== undefined) return;
+    const page = /^mindmap:page:(.+):(next|prev)$/.exec(action);
+    if (page) {
+      const [, id, dir] = page;
+      const current = this.mmPages.get(id) ?? 0;
+      this.mmPages.set(id, Math.max(0, current + (dir === 'next' ? 1 : -1)));
+      if (this.supported) this.refreshTargets();
+      return;
+    }
+    const prefix = 'mindmap:toggle:';
+    if (!action.startsWith(prefix)) return;
+    const id = action.slice(prefix.length);
+    if (!id) return;
+    this.mmPages.delete(id); // a re-opened branch starts on its first page
+    if (this.mmShownCollapsed.has(id)) {
+      this.mmCollapsed.delete(id);
+      this.mmExpanded.set(id, ++this.mmClock);
+    } else {
+      this.mmExpanded.delete(id);
+      this.mmCollapsed.add(id);
+    }
+    if (this.supported) this.refreshTargets();
   }
 
   /** Highlight a layout button for keyboard users (reuses the hover glow); -1 clears it. */
@@ -1075,6 +1143,11 @@ export class StarDust {
           {
             leftInset: this.o.layoutLeftInset,
             collapsedMindMapIds: this.o.collapsedMindMapIds,
+            mindMapExpanded: this.mmExpanded,
+            mindMapCollapsed: this.mmCollapsed,
+            mindMapPages: this.mmPages,
+            mindMapFit: this.o.mindMapFit,
+            mindMapMaxScale: this.o.mindMapMaxScale,
             padding: resolveLayoutPadding(this.o.layoutPadding, width, height),
             overflow: this.o.layoutOverflow,
             minFontSize: this.o.layoutMinFontSize,
@@ -1084,6 +1157,8 @@ export class StarDust {
         );
         this.hitRegions = sampledLayout.hitRegions;
         this.rippleRegions = sampledLayout.rippleRegions;
+        this.mmShownCollapsed = new Set(sampledLayout.mindMapCollapsedIds);
+        for (const id of sampledLayout.mindMapDroppedExpansions) this.mmExpanded.delete(id);
         layoutScrollLimit = sampledLayout.scrollMax;
         const windowMode = this.o.layoutWindow;
         if (windowMode !== 'screen' || layoutScrollLimit > 0) {
