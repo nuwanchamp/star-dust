@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.0
+
+The free wave can pour into a shape.
+
+### Added
+- **`formStaggerMs`** (default `0`). When dust drifting as the free wave forms text, an image or a layout, particles leave the wave over this many milliseconds, closest to their place first. The rest keep flowing with the wave until their turn, so the wave pours into the shape.
+
+### Fixed
+- The v0.5.0 package reported its version as 0.4.1. The version number is now correct.
+
+## 0.5.0
+
+Particle density per layout element.
+
+### Added
+- **`density` attribute on any layout element** (`sparse` | `balanced` | `dense`). It overrides `physics.density` for that element, and containers pass it down to their children. Mind maps use it in their particle budget fit.
+
+## 0.4.1
+
+### Fixed
+- `<Image>` no longer has a 48px minimum size, so small icons (e.g. `width="24" height="24"`) are drawn at the size they ask for. The smallest drawable size is 24px.
+
+## 0.4.0
+
+Icons and other elements can be links.
+
+### Added
+- **Actions on any layout element.** `<Image>`, `<Text>`, `<Heading>` and so on can take an `action` (e.g. icon links). They get the hover glow, pointer cursor, keyboard focus and `onLayoutAction`.
+- **`open:<url>` actions open the link in a new tab** (`openLinks`, default `true`; only http, https, mailto and tel).
+
+### Fixed
+- SVGs with only a `viewBox` (no width/height) were cropped, showing only their top-left part. They are now rasterized once on load and render whole.
+- Small images and icons (96px or less) no longer turn into blurry blobs: they skip the default edge fade and use a particle count proportional to their size.
+
 ## 0.3.0
 
 Mind maps stay readable and whole at any size.

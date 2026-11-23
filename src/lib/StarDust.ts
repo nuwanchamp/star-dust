@@ -154,6 +154,19 @@ export interface StarDustOptions extends StarDustCallbacks {
    */
   layoutAutoDissolve?: boolean;
   /**
+   * Open `open:<url>` layout actions (e.g. `<Image action="open:https://…">`) in a new tab. Only
+   * http(s), mailto and tel links are opened; `onLayoutAction` still fires either way. Default `true`;
+   * set `false` to handle navigation yourself.
+   */
+  openLinks?: boolean;
+  /**
+   * When dust that was drifting as the free wave forms a shape (text, image or layout), particles leave
+   * the wave over this many ms instead of all at once: those closest to their place go first, the rest
+   * keep flowing along the wave until their turn, so the wave visibly pours into the shape.
+   * Default `0` (everything heads for its place immediately).
+   */
+  formStaggerMs?: number;
+  /**
    * How formed text follows a scroll, 0..1. `0` (default): it moves rigidly with the content and stays
    * crisp. `1`: particles trail behind on their springs and catch up (dreamier, blurs while moving).
    * Values in between mix the two. Takes effect immediately.
@@ -196,6 +209,8 @@ type ResolvedOptions = Omit<StarDustOptions, 'physics' | 'ripple'> & {
   layoutWindow: LayoutWindowMode;
   layoutScrollHint: boolean;
   layoutAutoDissolve: boolean;
+  openLinks: boolean;
+  formStaggerMs: number;
   mindMapFit: MindMapFit;
   mindMapMaxScale: number;
   freeDrift: boolean;
@@ -242,6 +257,8 @@ const DEFAULTS: Omit<ResolvedOptions, keyof StarDustCallbacks> = {
   layoutWindow: 'auto',
   layoutScrollHint: true,
   layoutAutoDissolve: false,
+  openLinks: true,
+  formStaggerMs: 0,
   mindMapFit: 'collapse',
   mindMapMaxScale: 1.6,
   collapsedMindMapIds: undefined,
@@ -486,6 +503,8 @@ export class StarDust {
   private shockUniforms: ShockwaveUniform[] = [];
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   private targetDebounce: ReturnType<typeof setTimeout> | null = null;
+  /** Whether the last target assignment was the free wave (formStaggerMs applies when leaving it). */
+  private lastAssignFree = false;
   private targetToken = 0;
   private destroyed = false;
   private cleanups: (() => void)[] = [];
@@ -807,6 +826,20 @@ export class StarDust {
     this.o.onSoundImpulse?.(0.7, (hit.x + hit.width * 0.5) / Math.max(1, this.size.width));
     this.toggleMindMapNode(hit.action);
     this.o.onLayoutAction?.(hit.action, hit);
+    this.openLink(hit.action);
+  }
+
+  /** `open:<url>` actions open in a new tab (http, https, mailto, tel only). */
+  private openLink(action: string): void {
+    if (!this.o.openLinks || !action.startsWith('open:') || typeof window === 'undefined') return;
+    let url: URL;
+    try {
+      url = new URL(action.slice('open:'.length).trim(), window.location.href);
+    } catch {
+      return;
+    }
+    if (!['http:', 'https:', 'mailto:', 'tel:'].includes(url.protocol)) return;
+    window.open(url.href, '_blank', 'noopener,noreferrer');
   }
 
   /**
@@ -1264,7 +1297,37 @@ export class StarDust {
         isImage || this.o.targetMode === 'layout'
       );
     }
+    const fromWave = this.lastAssignFree && !this.o.freeDrift;
+    this.lastAssignFree = this.o.freeDrift;
+    this.staggerJoins(fromWave ? this.o.formStaggerMs : 0);
     this.o.onParticleCountChange?.(pool.count);
+  }
+
+  /**
+   * Spread out when targeted particles leave the wave (`formStaggerMs`): nearest to their place first,
+   * so the shape fills in from where the wave touches it. `spanMs` 0 releases everything now.
+   */
+  private staggerJoins(spanMs: number): void {
+    const { count, hasTarget, joinAt, x, y, tx, ty } = this.pool;
+    if (!(spanMs > 0)) {
+      joinAt.fill(0, 0, count);
+      return;
+    }
+    const idx: number[] = [];
+    const dist: number[] = [];
+    for (let i = 0; i < count; i++) {
+      joinAt[i] = 0;
+      if (!hasTarget[i]) continue;
+      idx.push(i);
+      // A little noise so the release front is soft rather than a sharp circle.
+      dist.push(Math.hypot(x[i] - tx[i], y[i] - ty[i]) * (0.85 + Math.random() * 0.3));
+    }
+    const order = idx.map((_, k) => k).sort((a, b) => dist[a] - dist[b]);
+    const now = performance.now();
+    const last = Math.max(1, order.length - 1);
+    order.forEach((k, rank) => {
+      joinAt[idx[k]] = now + (rank / last) * spanMs;
+    });
   }
 
   private renderFrame = (now: number): void => {
@@ -1352,6 +1415,7 @@ export class StarDust {
       regionId,
       gravityBreakUntil,
       windReleaseAt,
+      joinAt,
     } = pool;
 
     const turb = (isReduced ? 0.18 : 1) * currentPhysics.turbulence;
@@ -1541,7 +1605,8 @@ export class StarDust {
       const pPhase = phase[i];
       const pMass = mass[i];
       const pLayer = waveLayer[i];
-      const isGlyph = hasTarget[i] === 1 && !isFree;
+      // A targeted particle still waiting its turn (formStaggerMs) keeps moving with the wave.
+      const isGlyph = hasTarget[i] === 1 && !isFree && now >= joinAt[i];
 
       // Staggered directional wind erosion gust
       const releaseTime = windReleaseAt[i];

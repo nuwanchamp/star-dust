@@ -24,6 +24,8 @@ export interface ParticlePool {
   regionId: Int16Array; // -1 = default particle, >= 0 = interactive layout region index
   gravityBreakUntil: Float64Array;
   windReleaseAt: Float64Array;
+  /** performance.now() time a targeted particle leaves the wave for its target; 0 = straight away. */
+  joinAt: Float64Array;
 }
 
 export function computeWavePoint(
@@ -82,6 +84,7 @@ export function createParticlePool(initialCapacity: number): ParticlePool {
     regionId: new Int16Array(cap).fill(-1),
     gravityBreakUntil: new Float64Array(cap),
     windReleaseAt: new Float64Array(cap),
+    joinAt: new Float64Array(cap),
   };
 }
 
@@ -137,6 +140,7 @@ function growPool(pool: ParticlePool, minCapacity: number): void {
   pool.regionId = growI16(pool.regionId);
   pool.gravityBreakUntil = growF64(pool.gravityBreakUntil);
   pool.windReleaseAt = growF64(pool.windReleaseAt);
+  pool.joinAt = growF64(pool.joinAt);
   pool.capacity = newCap;
 }
 
@@ -196,6 +200,7 @@ export function resizeParticlePool(
     pool.regionId[i] = -1;
     pool.gravityBreakUntil[i] = 0;
     pool.windReleaseAt[i] = 0;
+    pool.joinAt[i] = 0;
   }
 
   pool.count = desiredCount;

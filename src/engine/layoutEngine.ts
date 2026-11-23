@@ -24,6 +24,9 @@ import type {
   RippleTrigger,
 } from '../types/mote';
 
+/** Smallest side an <Image> is laid out at; sampleImageIntoBox draws nothing below 24px. */
+const MIN_IMAGE_SIDE = 24;
+
 interface ResolvedRect {
   x: number;
   y: number;
@@ -168,6 +171,20 @@ const FONT_FAMILY_MAP: Record<FontStyle, string> = {
   sans: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif",
   mono: "'JetBrains Mono', ui-monospace, monospace",
 };
+
+/** Effective sampling density of each node (its own `density` attribute, else its parent's). */
+const nodeDensity = new WeakMap<LayoutNode, DensityPreset>();
+
+function parseDensityAttr(value: string | undefined): DensityPreset | null {
+  const v = (value || '').trim().toLowerCase();
+  return v === 'dense' || v === 'balanced' || v === 'sparse' ? v : null;
+}
+
+function assignDensities(node: LayoutNode, inherited: DensityPreset): void {
+  const own = parseDensityAttr(node.attrs.density) ?? inherited;
+  nodeDensity.set(node, own);
+  for (const child of node.children) assignDensities(child, own);
+}
 
 const LAYOUT_BUDGET_BY_DENSITY: Record<DensityPreset, number> = {
   sparse: 16500,
@@ -756,8 +773,10 @@ function measureNode(
 
     return {
       node,
-      intrinsicWidth: Math.max(48, Math.round(w)),
-      intrinsicHeight: Math.max(48, Math.round(h)),
+      // 24px is the smallest box the image sampler draws (see sampleImageIntoBox), so small icons
+      // keep the size they ask for instead of being pushed up to 48px.
+      intrinsicWidth: Math.max(MIN_IMAGE_SIDE, Math.round(w)),
+      intrinsicHeight: Math.max(MIN_IMAGE_SIDE, Math.round(h)),
       resolvedImg: img,
       children: [],
     };
@@ -1016,7 +1035,7 @@ function measureNode(
         branchGap: parseNum(node.attrs.branchGap, compact ? 16 : 22),
         compact,
       },
-      mindMap,
+      { ...mindMap, density: nodeDensity.get(node) ?? mindMap.density },
       measureCtx
     );
     return {
@@ -1419,7 +1438,7 @@ export function sampleLayoutScene(
   root: LayoutNode | null,
   viewportWidth: number,
   viewportHeight: number,
-  density: DensityPreset,
+  sceneDensity: DensityPreset,
   defaultFontStyle: FontStyle,
   invertContrast: boolean,
   isDarkTheme: boolean,
@@ -1442,6 +1461,9 @@ export function sampleLayoutScene(
   if (!root || viewportWidth < 120 || viewportHeight < 120) {
     return empty;
   }
+
+  const density = sceneDensity;
+  assignDensities(root, sceneDensity);
 
   const measureCanvas = document.createElement('canvas');
   const measureCtx = measureCanvas.getContext('2d');
@@ -1579,6 +1601,7 @@ export function sampleLayoutScene(
   for (const leaf of placedLeaves) {
     const { node } = leaf.measured;
     const { rect, ripple } = leaf;
+    const density = nodeDensity.get(node) ?? sceneDensity;
 
     if (node.tag === 'Spacer') {
       continue;
@@ -1600,6 +1623,24 @@ export function sampleLayoutScene(
       speed: ripple.speed,
       wavelength: ripple.wavelength,
     });
+
+    // Any element (not just <Button>) can be clickable via an `action` attribute, e.g. an icon link:
+    // <Image src="/icons/x.svg" action="open:https://…" />. Its particles are never thinned.
+    const leafAction = node.attrs.action;
+    if (leafAction && node.tag !== 'Button' && node.tag !== 'MindMap') {
+      const hitPad = 4;
+      hitRegions.push({
+        id: hitRegions.length,
+        rippleRegionId: regionId,
+        x: rect.x - hitPad,
+        y: rect.y - hitPad,
+        width: rect.width + hitPad * 2,
+        height: rect.height + hitPad * 2,
+        action: leafAction,
+        label: node.attrs.label || node.attrs.alt || node.text || leafAction,
+      });
+      buttonRegionIds.add(regionId);
+    }
 
     if (node.tag === 'Image') {
       imageLeaves.push({ leaf, regionId });
@@ -2256,6 +2297,7 @@ export function sampleLayoutScene(
     if (!img) continue;
 
     const { attrs } = leaf.measured.node;
+    const density = nodeDensity.get(leaf.measured.node) ?? sceneDensity;
     const localInvert =
       attrs.invert === 'true' ? !invertContrast : attrs.invert === 'false' ? false : invertContrast;
 
@@ -2263,12 +2305,23 @@ export function sampleLayoutScene(
     const localBlurStyle: ImageBlurStyle =
       attrs.blurStyle === 'edge' ? 'edge' : attrs.blurStyle === 'radial' ? 'radial' : imageTuning.blurStyle;
 
+    // Icons and other small images: no edge fade by default (it turns a small square into a blob),
+    // and a particle count proportional to their area instead of the per-image minimum.
+    const isSmall = Math.min(leaf.rect.width, leaf.rect.height) <= 96;
+    const spacing = density === 'dense' ? 0.8 : density === 'balanced' ? 1.1 : 1.5;
+    const imageTarget = Math.min(
+      perImageBudget,
+      Math.max(150, Math.round((leaf.rect.width * leaf.rect.height) / (spacing * spacing)))
+    );
+
     const localTuning: ImageTuningConfig = {
       blurStyle: localBlurStyle,
       edgeBlur: blurDisabled
         ? 0
         : attrs.blur !== undefined
         ? parseNum(attrs.blur, imageTuning.edgeBlur)
+        : isSmall
+        ? 0
         : imageTuning.edgeBlur,
       contrast:
         attrs.contrast !== undefined ? parseNum(attrs.contrast, imageTuning.contrast) : imageTuning.contrast,
@@ -2285,7 +2338,7 @@ export function sampleLayoutScene(
       localInvert,
       isDarkTheme,
       localTuning,
-      perImageBudget
+      imageTarget
     );
 
     // Refine ripple center to exact sampled subject silhouette bounds

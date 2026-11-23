@@ -35,6 +35,13 @@ ${Array.from({ length: 19 }, (_, i) => `    - Role highlight ${i + 1}`).join('\n
 </MindMap>
 <Row gap="16"><Button action="back">Back</Button><Button action="gust">Gust</Button></Row></Col>`;
 
+// A 40×40 icon SVG with only a viewBox (no width/height), like many icon sets ship.
+const ICON = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="9" fill="#2563eb"/></svg>');
+const LINKS = `<Col gap="18"><Heading>Links</Heading><Row gap="18">
+<Image src="${ICON}" width="40" height="40" action="open:https://example.com/profile" />
+<Image src="${ICON}" width="28" height="28" action="open:javascript:alert(1)" />
+</Row></Col>`;
+
 let failures = 0;
 const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? `  (${detail})` : ''}`);
@@ -157,6 +164,81 @@ try {
   await clickRegion("h.action.endsWith(':prev')");
   await page.waitForFunction(() => !window.dust.layoutHitRegions.some((h) => h.action.endsWith(':prev')), null, { timeout: 15000 });
   check('"previous" goes back to the first page', true);
+
+  // 7. Icon links: actions on images, open:<url> opens safe links in a new tab.
+  await page.evaluate(() => { window.opened = []; window.open = (u, t, f) => { window.opened.push([u, t, f]); return null; }; });
+  const iconCenter = (needle) => page.evaluate((n) => {
+    const h = window.dust.layoutHitRegions.find((r) => r.action.includes(n));
+    return h && { x: h.x + h.width / 2, y: h.y + h.height / 2 };
+  }, needle);
+  await page.evaluate((m) => { window.actions = []; window.make(m); }, LINKS);
+  await page.waitForFunction(() => window.dust.layoutHitRegions.length === 2, null, { timeout: 15000 });
+  const icon = await iconCenter('example.com');
+  await page.mouse.click(icon.x, icon.y);
+  const openCalls = await page.evaluate(() => window.opened);
+  check('clicking an icon with action="open:…" opens the link in a new tab',
+    openCalls.length === 1 && openCalls[0][0] === 'https://example.com/profile' && openCalls[0][1] === '_blank', JSON.stringify(openCalls));
+  check('a 28px icon keeps its size (hit box 28 + 2×4 padding)',
+    await page.evaluate(() => window.dust.layoutHitRegions.find((r) => r.action.includes('javascript')).width === 36));
+  const bad = await iconCenter('javascript');
+  await page.mouse.click(bad.x, bad.y);
+  check('javascript: links are not opened (action still reported)',
+    (await page.evaluate(() => window.opened.length)) === 1 && (await page.evaluate(() => window.actions.length)) === 2);
+  await page.evaluate((m) => { window.opened = []; window.make(m, { openLinks: false }); }, LINKS);
+  await page.waitForFunction(() => window.dust.layoutHitRegions.length === 2, null, { timeout: 15000 });
+  const again = await iconCenter('example.com');
+  await page.mouse.click(again.x, again.y);
+  check('openLinks: false leaves navigation to the app', (await page.evaluate(() => window.opened.length)) === 0);
+  check('a viewBox-only SVG icon is sampled whole', await page.evaluate(() => {
+    const d = window.dust, h = d.layoutHitRegions[0], pool = d.pool;
+    let top = 0, bottom = 0;
+    for (let i = 0; i < pool.count; i++) {
+      if (!pool.hasTarget[i] || pool.regionId[i] !== h.rippleRegionId) continue;
+      if (pool.ty[i] < h.y + h.height / 2) top++; else bottom++;
+    }
+    return top > 50 && bottom > 50 && Math.abs(top - bottom) / (top + bottom) < 0.25;
+  }));
+
+  // 8. Per-element density: own attribute, inherited from a container, default from the scene.
+  const counts = await page.evaluate(async () => {
+    const { parseLayoutMarkup } = await import('/src/engine/layoutParser.ts');
+    const { sampleLayoutScene } = await import('/src/engine/layoutEngine.ts');
+    const { DEFAULT_IMAGE_TUNING } = await import('/src/engine/imageSampler.ts');
+    await document.fonts.ready;
+    const h = (d) => `<Heading size="xl"${d ? ` density="${d}"` : ''}>Density</Heading>`;
+    const markup = `<Col gap="20">${h()}${h('dense')}${h('sparse')}<Col density="dense">${h()}${h('sparse')}</Col></Col>`;
+    const scene = sampleLayoutScene(parseLayoutMarkup(markup).root, 1280, 1400, 'balanced', 'serif', false, true,
+      DEFAULT_IMAGE_TUNING, new Map(), () => null, { trim: false, particleBudget: 1e9 });
+    const per = new Map();
+    for (const p of scene.points) per.set(p.regionId, (per.get(p.regionId) ?? 0) + 1);
+    return scene.rippleRegions.filter((r) => r.tag === 'Heading').map((r) => per.get(r.id) ?? 0);
+  });
+  const [plain, dense, sparse, inherited, overridden] = counts;
+  check('density attribute changes an element\'s particle count (dense > default > sparse)',
+    dense > plain * 1.5 && sparse < plain * 0.8, counts.join(' / '));
+  check('density is inherited from a container and can be overridden inside it',
+    Math.abs(inherited - dense) / dense < 0.1 && Math.abs(overridden - sparse) / sparse < 0.1);
+
+  // 8. formStaggerMs: leaving the wave, particles join their shape over time instead of all at once.
+  const waiting = () => page.evaluate(() => {
+    const p = window.dust.pool, now = performance.now();
+    let targeted = 0, later = 0;
+    for (let i = 0; i < p.count; i++) if (p.hasTarget[i]) { targeted++; if (p.joinAt[i] > now) later++; }
+    return { targeted, later };
+  });
+  const formFromWave = async (opts) => {
+    await page.evaluate((o) => window.make(null, { freeDrift: true, text: 'Hello', ...o }), opts);
+    await frames(5);
+    await page.evaluate(() => window.dust.setOptions({ freeDrift: false }));
+    await page.waitForFunction(() => { const p = window.dust.pool; for (let i = 0; i < p.count; i++) if (p.hasTarget[i]) return true; return false; }, null, { timeout: 10000 });
+    return waiting();
+  };
+  const staggered = await formFromWave({ formStaggerMs: 1500 });
+  check('formStaggerMs: most particles wait on the wave at first', staggered.later > staggered.targeted * 0.6, JSON.stringify(staggered));
+  await page.waitForTimeout(1700);
+  check('formStaggerMs: all have joined after the span', (await waiting()).later === 0);
+  const instant = await formFromWave({});
+  check('default: everything heads for its place at once', instant.targeted > 0 && instant.later === 0, JSON.stringify(instant));
 
   check('no page errors', errors.length === 0, errors.join(' | '));
 } finally {
