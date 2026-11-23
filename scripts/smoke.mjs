@@ -240,6 +240,26 @@ try {
   const instant = await formFromWave({});
   check('default: everything heads for its place at once', instant.targeted > 0 && instant.later === 0, JSON.stringify(instant));
 
+  // 9. The pour is visible: particles still waiting on the wave keep their wave brightness in a layout.
+  const ribbonAlpha = () => page.evaluate(() => {
+    const d = window.dust, p = d.pool, v = d.vertexData, now = performance.now();
+    let sum = 0, n = 0;
+    for (let i = 0; i < p.count; i++) {
+      if (p.waveLayer[i] < 0) continue;
+      if (p.hasTarget[i] && p.joinAt[i] <= now) continue; // already joined the shape
+      sum += v[i * 8 + 5]; n++;
+    }
+    return n ? sum / n : 0;
+  });
+  await page.evaluate((m) => window.make(m, { freeDrift: true, formStaggerMs: 4000 }), LINKS);
+  await frames(20);
+  const onWave = await ribbonAlpha();
+  await page.evaluate(() => window.dust.setOptions({ freeDrift: false }));
+  await page.waitForFunction(() => { const p = window.dust.pool; for (let i = 0; i < p.count; i++) if (p.hasTarget[i]) return true; return false; }, null, { timeout: 10000 });
+  await frames(3);
+  const pouring = await ribbonAlpha();
+  check('pouring: the wave stays visible while it pours into a layout', pouring > onWave * 0.6, `${onWave.toFixed(3)} -> ${pouring.toFixed(3)}`);
+
   check('no page errors', errors.length === 0, errors.join(' | '));
 } finally {
   await browser.close();

@@ -241,6 +241,9 @@ export const DEFAULT_RIPPLE: RippleConfig = {
   wavelength: 130,
 };
 
+/** After the last particle leaves the wave (formStaggerMs), ms until the scene's normal look is fully in. */
+const POUR_SETTLE_MS = 1200;
+
 const DEFAULTS: Omit<ResolvedOptions, keyof StarDustCallbacks> = {
   targetMode: 'text',
   text: '',
@@ -505,6 +508,9 @@ export class StarDust {
   private targetDebounce: ReturnType<typeof setTimeout> | null = null;
   /** Whether the last target assignment was the free wave (formStaggerMs applies when leaving it). */
   private lastAssignFree = false;
+  /** When the wave last started pouring into a shape (formStaggerMs), and over how long; 0 = not. */
+  private pourStartedAt = 0;
+  private pourSpanMs = 0;
   private targetToken = 0;
   private destroyed = false;
   private cleanups: (() => void)[] = [];
@@ -1300,6 +1306,12 @@ export class StarDust {
     const fromWave = this.lastAssignFree && !this.o.freeDrift;
     this.lastAssignFree = this.o.freeDrift;
     this.staggerJoins(fromWave ? this.o.formStaggerMs : 0);
+    if (fromWave && this.o.formStaggerMs > 0) {
+      this.pourStartedAt = performance.now();
+      this.pourSpanMs = this.o.formStaggerMs;
+    } else if (!this.o.freeDrift) {
+      this.pourStartedAt = 0;
+    }
     this.o.onParticleCountChange?.(pool.count);
   }
 
@@ -1443,7 +1455,14 @@ export class StarDust {
     const isCompositeStage = isImageStage || isLayoutStage;
     // Scrollable layouts hand particles across the screen as content scrolls; keep those in transit
     // faint so text re-forms out of a soft drift instead of an additive white flare.
-    const dimTransit = isLayoutStage && this.layoutWindow !== null;
+    // While the wave pours into a shape (formStaggerMs) the pour should be seen: particles still waiting
+    // keep their wave brightness, the rest of the wave dims gradually instead of at once, and particles
+    // in flight stay visible. `pourMix` goes 0 → 1 over the pour plus a short settle.
+    const pourMix =
+      this.pourStartedAt > 0 && !isFree
+        ? Math.min(1, (now - this.pourStartedAt) / (this.pourSpanMs + POUR_SETTLE_MS))
+        : 1;
+    const dimTransit = isLayoutStage && this.layoutWindow !== null && pourMix >= 1;
     const hoveredBtnId = this.hoveredRegionId;
 
     const glyphScale = isImageStage
@@ -1990,8 +2009,13 @@ export class StarDust {
             )
           : Math.max(0, Math.min(1, normX * 0.65 + cSeed * 0.35 + pEnergy * 0.24));
 
-      const baseRibbonStageDim = isFree ? 1 : isCompositeStage ? 0.18 : 0.32;
-      const baseDustStageDim = isFree ? 1 : isCompositeStage ? 0.42 : 0.65;
+      const stageRibbonDim = isFree ? 1 : isCompositeStage ? 0.18 : 0.32;
+      const stageDustDim = isFree ? 1 : isCompositeStage ? 0.42 : 0.65;
+      // Waiting to leave the wave (formStaggerMs): still part of the wave, so full wave brightness.
+      const waitingOnWave = hasTarget[i] === 1 && !isFree && now < joinAt[i];
+      const stageMix = waitingOnWave ? 0 : pourMix;
+      const baseRibbonStageDim = 1 + (stageRibbonDim - 1) * stageMix;
+      const baseDustStageDim = 1 + (stageDustDim - 1) * stageMix;
       const ribbonStageDim =
         baseRibbonStageDim + (1 - baseRibbonStageDim) * dissolveProgress;
       const dustStageDim = baseDustStageDim + (1 - baseDustStageDim) * dissolveProgress;

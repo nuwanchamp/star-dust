@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+### Fixed
+- **The `formStaggerMs` pour is visible.** Particles still waiting on the wave keep its full brightness, and the rest of the wave dims gradually over the pour (plus about 1.2s to settle) instead of dimming at once. Before, the wave went faint as soon as a shape started forming, so in layouts the pour was barely visible.
+
 ## 0.6.0
 
 The free wave can pour into a shape.
