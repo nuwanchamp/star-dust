@@ -387,33 +387,41 @@ try {
     return still / idx.length;
   });
   check('flow: the old shape erodes grain by grain (some let go, the rest still hold)', erosion > 0.3 && erosion < 0.97, `${(erosion * 100).toFixed(0)}% still in place after ~0.45s`);
-  // Growing scene (needs more dust than the old one has): recruits come from the background and must
-  // start as faint as the background they came from, not flash at full brightness where they sit.
+  // Growing scene (needs more dust than the old one has): it's built only from the old shape's dust;
+  // background dust takes no part, and the extra particles fade in once the old shape has dissolved.
   await landed();
   await page.evaluate(() => {
     const p = window.dust.pool; window.__bg = [];
     for (let i = 0; i < p.count; i++) if (!p.hasTarget[i]) window.__bg.push(i);
   });
-  // Brightness x glow of the recruited ones (what the eye sees blooming at the edges).
-  const recruitLook = () => page.evaluate(() => {
-    const p = window.dust.pool, v = window.dust.vertexData; let n = 0, sum = 0;
-    for (const i of window.__bg) if (p.hasTarget[i] || window.__recruits?.has(i)) { n++; sum += v[i * 8 + 5] * (1 + v[i * 8 + 7]); }
-    return { n, look: sum / Math.max(1, n) };
-  });
-  await page.evaluate(() => { window.__recruits = null; });
-  const growBefore = await page.evaluate(() => {
+  const bgLook = () => page.evaluate(() => {
     const v = window.dust.vertexData; let sum = 0;
     for (const i of window.__bg) sum += v[i * 8 + 5] * (1 + v[i * 8 + 7]);
     return sum / Math.max(1, window.__bg.length);
   });
-  await page.evaluate(() => window.dust.setOptions({ layoutAst: window.__full }));
+  const bornLook = () => page.evaluate(() => {
+    const p = window.dust.pool, v = window.dust.vertexData; let n = 0, a = 0;
+    for (let i = window.__firstBorn; i < p.count; i++) { n++; a += v[i * 8 + 5]; }
+    return { n, alpha: a / Math.max(1, n) };
+  });
+  const lookBefore = await bgLook();
+  await page.evaluate(() => { window.__firstBorn = window.dust.pool.count; window.dust.setOptions({ layoutAst: window.__full }); });
   await page.waitForFunction(() => window.dust.flowStartedAt > 0, null, { timeout: 10000 });
-  await page.evaluate(() => { const p = window.dust.pool; window.__recruits = new Set(window.__bg.filter((i) => p.hasTarget[i])); });
+  await frames(2);
+  // (The scroll hint's chevrons legitimately take free particles when the bigger scene scrolls.)
+  const recruited = await page.evaluate(() => { const d = window.dust, p = d.pool; let n = 0; for (const i of window.__bg) if (p.hasTarget[i] && !d.hints.isHint(i)) n++; return n; });
+  check('flow: a bigger scene is built only from the old scene\'s dust (no background dust recruited)', recruited === 0, `${recruited} background particles took a place`);
+  const bornEarly = await bornLook();
+  check('flow: extra particles for a bigger scene are invisible while the old one dissolves', bornEarly.n > 0 && bornEarly.alpha < 0.01, JSON.stringify(bornEarly));
   await page.waitForTimeout(500);
-  const grow = await recruitLook();
-  check('flow: background dust recruited by a bigger scene stays background-faint (no bloom at the edges)', grow.n > 100 && grow.look < growBefore * 1.6, `${grow.n} recruited; look ${growBefore.toFixed(3)} -> ${grow.look.toFixed(3)} after 0.5s`);
+  const lookMid = await bgLook();
+  check('flow: the background stays as it was (no bloom or flicker at the edges)', lookMid < lookBefore * 1.25 && lookMid > lookBefore * 0.75, `${lookBefore.toFixed(3)} -> ${lookMid.toFixed(3)}`);
   await landed();
-  check('flow: the quiet recruits still land in the bigger scene', true);
+  // Past the span: they start fading in at 70% of it and take ~0.9s (+ up to 0.45s jitter).
+  await page.waitForFunction(() => performance.now() > window.dust.flowStartedAt + 3000 * 0.7 + 1500, null, { timeout: 15000 });
+  await frames(3);
+  const bornLate = await bornLook();
+  check('flow: …and they have faded in once the new scene has formed', bornLate.alpha > 0.1, JSON.stringify(bornLate));
 
   check('no page errors', errors.length === 0, errors.join(' | '));
 } finally {

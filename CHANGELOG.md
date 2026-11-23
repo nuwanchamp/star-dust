@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.2
+
+### Fixed
+- **`formFlowMs`: a new scene is built only from the old scene's dust.** Matching each new place to the nearest particle handed some places to background dust beside the old shape, which then lit up, drifted in or twinkled at the edges before the old shape had even dissolved. Those places now go to spare old-shape particles, and background dust takes no part. If the new scene needs more particles than the old one had, the extra ones wait invisibly at their place and fade in once the old scene has dissolved (from 70% of the span, over about 0.9s). Replaces the 0.7.1 handling of recruited background dust.
+
 ## 0.7.1
 
 ### Fixed

@@ -261,8 +261,10 @@ const FLOW_GAIN = 1.6;
 const FLOW_RELEASE_SHARE = 0.35;
 /** formFlowMs: each particle's own drift on top of the wind, so the dust spreads instead of sliding. */
 const FLOW_SPREAD = 0.05;
-/** formFlowMs, scene to scene: wind on recruited background dust, relative to the riders' (gentle). */
-const FLOW_QUIET_WIND = 0.25;
+/** formFlowMs, scene to scene: particles added because the new shape is bigger than the old one start
+ * fading in at this share of the span (once the old shape has dissolved), over FLOW_BORN_FADE_MS. */
+const FLOW_BORN_DELAY = 0.7;
+const FLOW_BORN_FADE_MS = 900;
 
 const DEFAULTS: Omit<ResolvedOptions, keyof StarDustCallbacks> = {
   targetMode: 'text',
@@ -1360,26 +1362,17 @@ export class StarDust {
     this.staggerJoins(stagger ? this.o.formStaggerMs : 0);
     pool.flowPhantom.fill(0, 0, pool.count);
     pool.flowRecruit.fill(0, 0, pool.count);
-    if (oldShape && oldAlpha) {
+    pool.flowBornAt.fill(0, 0, pool.count);
+    if (oldShape && oldAlpha && fromWave) {
+      // Leaving the wave every particle is "recruited": it starts from its own wave look.
       for (let i = 0; i < oldShape.length; i++) {
-        if (!oldShape[i]) {
-          // Background dust (or the wave) the new shape recruited: it starts from its own look.
-          if (pool.hasTarget[i]) {
-            pool.flowRecruit[i] = 1;
-            pool.flowBaseAlpha[i] = oldAlpha[i];
-          }
-          continue;
+        if (pool.hasTarget[i]) {
+          pool.flowRecruit[i] = 1;
+          pool.flowBaseAlpha[i] = oldAlpha[i];
         }
-        if (pool.hasTarget[i]) continue;
-        // Unused by the new shape: hold where it is (a target on itself), then dissolve.
-        pool.flowPhantom[i] = 1;
-        pool.hasTarget[i] = 1;
-        pool.tx[i] = pool.x[i];
-        pool.ty[i] = pool.y[i];
-        pool.regionId[i] = -1;
-        pool.isFringe[i] = 0;
-        pool.baseAlpha[i] = oldAlpha[i];
       }
+    } else if (oldShape && oldAlpha) {
+      this.buildFromOldShape(oldShape, oldAlpha, windowed, width, height);
     }
     this.scheduleCondense(flow ? this.o.formFlowMs : 0, fromWave);
     if (stagger || (flow && fromWave)) {
@@ -1395,6 +1388,90 @@ export class StarDust {
   }
 
   /**
+   * formFlowMs, scene to scene: the new shape is built only from the old shape's dust. Proximity
+   * matching may hand some new places to background particles; each of those places goes to a spare
+   * old-shape particle instead (and the background particle is left untouched). Old-shape particles
+   * still unused dissolve into ambient dust (flowPhantom). If the new shape needs more particles than
+   * the old one had, the extra ones wait invisibly at their place and fade in once the old shape has
+   * dissolved (flowBornAt).
+   */
+  private buildFromOldShape(
+    oldShape: Uint8Array,
+    oldAlpha: Float32Array,
+    windowed: LayoutWindow | null,
+    width: number,
+    height: number
+  ): void {
+    const pool = this.pool;
+    const recruits: number[] = [];
+    const spares: number[] = [];
+    for (let i = 0; i < oldShape.length; i++) {
+      if (!oldShape[i]) {
+        if (pool.hasTarget[i]) recruits.push(i);
+      } else if (!pool.hasTarget[i]) {
+        spares.push(i);
+      }
+    }
+    // Pair left-to-right so each spare's place is roughly on its side of the screen.
+    recruits.sort((a, b) => pool.tx[a] - pool.tx[b]);
+    spares.sort((a, b) => pool.x[a] - pool.x[b]);
+
+    const giveBack = (r: number) => {
+      pool.hasTarget[r] = 0;
+      pool.regionId[r] = -1;
+      pool.isFringe[r] = 0;
+      pool.baseAlpha[r] = oldAlpha[r];
+    };
+    const handOver = (from: number, to: number) => {
+      pool.tx[to] = pool.tx[from];
+      pool.ty[to] = pool.ty[from];
+      pool.regionId[to] = pool.regionId[from];
+      pool.isFringe[to] = pool.isFringe[from];
+      pool.baseAlpha[to] = pool.baseAlpha[from];
+      pool.hasTarget[to] = 1;
+      windowed?.relink(from, to, pool);
+      giveBack(from);
+    };
+
+    const swaps = Math.min(recruits.length, spares.length);
+    for (let k = 0; k < swaps; k++) handOver(recruits[k], spares[k]);
+
+    // Old-shape particles still unused: hold where they are (a target on themselves), then dissolve.
+    for (let k = swaps; k < spares.length; k++) {
+      const i = spares[k];
+      pool.flowPhantom[i] = 1;
+      pool.hasTarget[i] = 1;
+      pool.tx[i] = pool.x[i];
+      pool.ty[i] = pool.y[i];
+      pool.regionId[i] = -1;
+      pool.isFringe[i] = 0;
+      pool.baseAlpha[i] = oldAlpha[i];
+    }
+
+    // The new shape needs more than the old had: add particles at those places, faded in later.
+    const short = recruits.length - swaps;
+    if (short > 0) {
+      const first = pool.count;
+      resizeParticlePool(pool, first + short, width, height);
+      if (this.vertexData.length < pool.count * FLOATS_PER_VERTEX) {
+        this.vertexData = new Float32Array(Math.ceil(pool.count * 1.25) * FLOATS_PER_VERTEX);
+      }
+      this.hints.reset(pool.capacity);
+      const appearAt = performance.now() + this.o.formFlowMs * FLOW_BORN_DELAY;
+      for (let k = 0; k < short; k++) {
+        const r = recruits[swaps + k];
+        const j = first + k;
+        handOver(r, j);
+        pool.x[j] = pool.tx[j];
+        pool.y[j] = pool.ty[j];
+        pool.vx[j] = 0;
+        pool.vy[j] = 0;
+        pool.flowBornAt[j] = appearAt + Math.random() * FLOW_BORN_FADE_MS * 0.5;
+      }
+    }
+  }
+
+  /**
    * formFlowMs timing per particle. Leaving a shape, each particle lets go at a random moment in the
    * first part of the span (so the shape erodes grain by grain, not in wind-sized chunks); leaving the
    * wave, all let go at once (the wave is already moving). Each then rides the wind for a while before
@@ -1402,7 +1479,7 @@ export class StarDust {
    * ambient dust. `spanMs` 0 ends any flow.
    */
   private scheduleCondense(spanMs: number, fromWave = false): void {
-    const { count, hasTarget, condenseAt, releaseAt, flowRecruit } = this.pool;
+    const { count, hasTarget, condenseAt, releaseAt, flowRecruit, flowBornAt } = this.pool;
     if (!(spanMs > 0)) {
       this.flowStartedAt = 0;
       condenseAt.fill(0, 0, count);
@@ -1414,7 +1491,8 @@ export class StarDust {
     this.flowSpanMs = spanMs;
     this.flowFromWave = fromWave;
     for (let i = 0; i < count; i++) {
-      if (!hasTarget[i]) {
+      if (!hasTarget[i] || flowBornAt[i] > 0) {
+        // Not in the flow (added particles just fade in where they are).
         condenseAt[i] = 0;
         releaseAt[i] = 0;
         continue;
@@ -1545,6 +1623,7 @@ export class StarDust {
       flowPhantom,
       flowRecruit,
       flowBaseAlpha,
+      flowBornAt,
     } = pool;
 
     const turb = (isReduced ? 0.18 : 1) * currentPhysics.turbulence;
@@ -1734,9 +1813,6 @@ export class StarDust {
       this.flowStartedAt > 0 &&
       !isFree &&
       now < this.flowStartedAt + this.flowSpanMs + FLOW_CONDENSE_MS;
-    // Scene to scene, background dust the new shape recruits stays background (gentle drift, same
-    // faintness) until its landing time, so nothing blooms at the edges while the old shape dissolves.
-    const quietRecruits = flowActive && !this.flowFromWave;
     const windField = this.perlinWind;
     if (usePerlinWind || flowActive) {
       windField.update(width, height, time);
@@ -2019,20 +2095,14 @@ export class StarDust {
             const land = landT * landT * (3 - 2 * landT);
             const flowMix = 1 - land;
             pRide = ride;
-            const recruit = flowRecruit[i] === 1;
-            const quiet = recruit && quietRecruits;
-            // A recruit keeps its loose-dust look from the start; old-shape particles ease into it.
-            pFlowMix = recruit ? flowMix : ride * flowMix;
+            // A recruit (leaving the wave) keeps its loose-dust look from the start; old-shape
+            // particles ease into it.
+            pFlowMix = flowRecruit[i] === 1 ? flowMix : ride * flowMix;
             if (flowMix > 0.001) {
               const windScale =
-                ((quiet ? FLOW_QUIET_WIND : FLOW_GAIN) *
-                  ride *
-                  0.088 *
-                  Math.max(0.35, turb) *
-                  (0.68 + depth[i] * 0.64)) /
-                pMass;
+                (ride * FLOW_GAIN * 0.088 * Math.max(0.35, turb) * (0.68 + depth[i] * 0.64)) / pMass;
               // Each particle also drifts its own way, so neighbours don't travel as one block.
-              const spread = ride * (quiet ? FLOW_SPREAD * FLOW_QUIET_WIND : FLOW_SPREAD);
+              const spread = ride * FLOW_SPREAD;
               const ownX = Math.cos(pPhase * 7.3 + time * 0.6) * spread;
               const ownY = Math.sin(pPhase * 5.1 + time * 0.5) * spread;
               // Riding the wind: last frame's momentum plus the wind, without the pull to the target.
@@ -2209,6 +2279,16 @@ export class StarDust {
           : Math.min(1, baseAlpha[i] * dustStageDim * twinkle + pEnergy * 0.22) *
             waveAlphaScale;
 
+      // formFlowMs: a particle added for a bigger new shape fades in at its place once the old shape
+      // has dissolved (invisible before).
+      const bornAt = flowBornAt[i];
+      let bornFade = 1;
+      if (bornAt > 0) {
+        const t = Math.max(0, Math.min(1, (now - bornAt) / FLOW_BORN_FADE_MS));
+        bornFade = t * t * (3 - 2 * t);
+        if (t >= 1) flowBornAt[i] = 0;
+      }
+
       if (isGlyph) {
         const isHoveredBtn =
           isLayoutStage && hoveredBtnId >= 0 && regionId[i] === hoveredBtnId;
@@ -2259,9 +2339,7 @@ export class StarDust {
               pLayer >= 0
                 ? waveAlpha
                 : Math.min(1, ownAlpha * dustStageDim * twinkle + pEnergy * 0.22) * waveAlphaScale;
-            flyAlpha = quietRecruits
-              ? ambientAlpha
-              : ambientAlpha + (riderAlpha - ambientAlpha) * pRide;
+            flyAlpha = ambientAlpha + (riderAlpha - ambientAlpha) * pRide;
           }
           alphaWeight += (flyAlpha - alphaWeight) * pFlowMix;
         }
@@ -2306,14 +2384,15 @@ export class StarDust {
       vData[baseOffset + 2] = lut[lutIdx + 0];
       vData[baseOffset + 3] = lut[lutIdx + 1];
       vData[baseOffset + 4] = lut[lutIdx + 2];
-      vData[baseOffset + 5] = Math.min(1, alphaWeight);
+      vData[baseOffset + 5] = Math.min(1, alphaWeight) * bornFade;
       vData[baseOffset + 6] =
         size[i] * targetParticleScale +
         pEnergy * 0.12 +
         positiveCrest * 0.22 +
         (isHoveredBtnSize ? 0.26 * (1 - meltBlend) : 0);
       vData[baseOffset + 7] =
-        dimTransit && isGlyph ? motionGlow * Math.min(1, alphaWeight * 1.6) : motionGlow;
+        bornFade *
+        (dimTransit && isGlyph ? motionGlow * Math.min(1, alphaWeight * 1.6) : motionGlow);
     }
 
     let lineVertexCount = 0;
