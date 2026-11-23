@@ -167,6 +167,14 @@ export interface StarDustOptions extends StarDustCallbacks {
    */
   formStaggerMs?: number;
   /**
+   * When the dust takes a new shape (leaving the free wave, or a new `layoutAst`, `text`, `imageSrc` or
+   * `targetMode`), the old shape melts into the Perlin wind and the particles ride its swirling streams
+   * for about this many ms before condensing into the new shape, each at its own moment. Takes
+   * precedence over `formStaggerMs`. Re-layouts of the same scene (resize, mind-map toggles, density)
+   * are not flowed. Default `0` (off).
+   */
+  formFlowMs?: number;
+  /**
    * How formed text follows a scroll, 0..1. `0` (default): it moves rigidly with the content and stays
    * crisp. `1`: particles trail behind on their springs and catch up (dreamier, blurs while moving).
    * Values in between mix the two. Takes effect immediately.
@@ -211,6 +219,7 @@ type ResolvedOptions = Omit<StarDustOptions, 'physics' | 'ripple'> & {
   layoutAutoDissolve: boolean;
   openLinks: boolean;
   formStaggerMs: number;
+  formFlowMs: number;
   mindMapFit: MindMapFit;
   mindMapMaxScale: number;
   freeDrift: boolean;
@@ -243,6 +252,15 @@ export const DEFAULT_RIPPLE: RippleConfig = {
 
 /** After the last particle leaves the wave (formStaggerMs), ms until the scene's normal look is fully in. */
 const POUR_SETTLE_MS = 1200;
+/** formFlowMs: how fast the old shape melts into the wind, and how long each particle takes to land. */
+const FLOW_RAMP_IN_MS = 350;
+const FLOW_CONDENSE_MS = 700;
+/** formFlowMs: strength of the wind while riding it, relative to the idle dissolve's. */
+const FLOW_GAIN = 1.6;
+/** formFlowMs, shape to shape: particles let go of the old shape over this share of the span. */
+const FLOW_RELEASE_SHARE = 0.35;
+/** formFlowMs: each particle's own drift on top of the wind, so the dust spreads instead of sliding. */
+const FLOW_SPREAD = 0.05;
 
 const DEFAULTS: Omit<ResolvedOptions, keyof StarDustCallbacks> = {
   targetMode: 'text',
@@ -262,6 +280,7 @@ const DEFAULTS: Omit<ResolvedOptions, keyof StarDustCallbacks> = {
   layoutAutoDissolve: false,
   openLinks: true,
   formStaggerMs: 0,
+  formFlowMs: 0,
   mindMapFit: 'collapse',
   mindMapMaxScale: 1.6,
   collapsedMindMapIds: undefined,
@@ -510,6 +529,13 @@ export class StarDust {
   private lastAssignFree = false;
   /** When the wave last started pouring into a shape (formStaggerMs), and over how long; 0 = not. */
   private pourStartedAt = 0;
+  /** The shown shape changed (layoutAst, text, imageSrc, targetMode) since the last assignment. */
+  private shapeChanged = false;
+  /** At least one target assignment has happened (there is a shape to flow from). */
+  private hasAssigned = false;
+  /** When the current formFlowMs transition started, and its span; 0 = none. */
+  private flowStartedAt = 0;
+  private flowSpanMs = 0;
   private pourSpanMs = 0;
   private targetToken = 0;
   private destroyed = false;
@@ -643,6 +669,14 @@ export class StarDust {
 
     if (o.layoutAst !== prev.layoutAst || o.targetMode !== prev.targetMode) {
       this.setKeyboardFocus(-1);
+    }
+    if (
+      o.layoutAst !== prev.layoutAst ||
+      o.targetMode !== prev.targetMode ||
+      o.text !== prev.text ||
+      o.imageSrc !== prev.imageSrc
+    ) {
+      this.shapeChanged = true;
     }
     if (o.layoutAst !== prev.layoutAst) {
       this.mmExpanded.clear();
@@ -1278,10 +1312,24 @@ export class StarDust {
     const bgRatio = isImage || this.o.targetMode === 'layout' ? 0.34 : 0.6;
     const targetCount = windowed ? windowed.poolNeed : targets.length;
     const bgCount = targetCount > 0 ? Math.round(ambientCount * bgRatio) : ambientCount;
-    const desiredTotal = targetCount + bgCount;
     const pool = this.pool;
+    const fromWave = this.lastAssignFree && !this.o.freeDrift;
+    // formFlowMs: a new shape (or leaving the wave) melts into the Perlin wind, then condenses.
+    const flow =
+      this.o.formFlowMs > 0 &&
+      this.hasAssigned &&
+      !this.o.freeDrift &&
+      (this.lastAssignFree || this.shapeChanged);
+    this.shapeChanged = false;
+    this.hasAssigned = true;
+    // Don't drop particles mid-flow: they're the old shape's dust, now riding the wind.
+    const desiredTotal = flow ? Math.max(targetCount + bgCount, pool.count) : targetCount + bgCount;
 
     resizeParticlePool(pool, desiredTotal, width, height);
+    // Scene to scene: remember which particles made up the old shape, and their look, so the ones the
+    // new shape doesn't use can dissolve with the rest instead of vanishing at once.
+    const oldShape = flow && !fromWave ? pool.hasTarget.slice(0, pool.count) : null;
+    const oldAlpha = oldShape ? pool.baseAlpha.slice(0, pool.count) : null;
 
     if (this.vertexData.length < desiredTotal * FLOATS_PER_VERTEX) {
       this.vertexData = new Float32Array(
@@ -1303,16 +1351,64 @@ export class StarDust {
         isImage || this.o.targetMode === 'layout'
       );
     }
-    const fromWave = this.lastAssignFree && !this.o.freeDrift;
     this.lastAssignFree = this.o.freeDrift;
-    this.staggerJoins(fromWave ? this.o.formStaggerMs : 0);
-    if (fromWave && this.o.formStaggerMs > 0) {
+    const stagger = !flow && fromWave && this.o.formStaggerMs > 0;
+    this.staggerJoins(stagger ? this.o.formStaggerMs : 0);
+    pool.flowPhantom.fill(0, 0, pool.count);
+    if (oldShape && oldAlpha) {
+      for (let i = 0; i < oldShape.length; i++) {
+        if (!oldShape[i] || pool.hasTarget[i]) continue;
+        // Unused by the new shape: hold where it is (a target on itself), then dissolve.
+        pool.flowPhantom[i] = 1;
+        pool.hasTarget[i] = 1;
+        pool.tx[i] = pool.x[i];
+        pool.ty[i] = pool.y[i];
+        pool.regionId[i] = -1;
+        pool.isFringe[i] = 0;
+        pool.baseAlpha[i] = oldAlpha[i];
+      }
+    }
+    this.scheduleCondense(flow ? this.o.formFlowMs : 0, fromWave);
+    if (stagger || (flow && fromWave)) {
+      // Leaving the wave: keep the wave visible and dim it gradually (see pourMix in renderFrame).
+      // Scene to scene the background stays at its scene brightness; only particles in flight are
+      // kept visible (dimTransit is off while a flow is active).
       this.pourStartedAt = performance.now();
-      this.pourSpanMs = this.o.formStaggerMs;
+      this.pourSpanMs = flow ? this.o.formFlowMs : this.o.formStaggerMs;
     } else if (!this.o.freeDrift) {
       this.pourStartedAt = 0;
     }
     this.o.onParticleCountChange?.(pool.count);
+  }
+
+  /**
+   * formFlowMs timing per particle. Leaving a shape, each particle lets go at a random moment in the
+   * first part of the span (so the shape erodes grain by grain, not in wind-sized chunks); leaving the
+   * wave, all let go at once (the wave is already moving). Each then rides the wind for a while before
+   * condensing into its new place, or, for old-shape particles the new one doesn't use, turning into
+   * ambient dust. `spanMs` 0 ends any flow.
+   */
+  private scheduleCondense(spanMs: number, fromWave = false): void {
+    const { count, hasTarget, condenseAt, releaseAt } = this.pool;
+    if (!(spanMs > 0)) {
+      this.flowStartedAt = 0;
+      condenseAt.fill(0, 0, count);
+      releaseAt.fill(0, 0, count);
+      return;
+    }
+    const now = performance.now();
+    this.flowStartedAt = now;
+    this.flowSpanMs = spanMs;
+    for (let i = 0; i < count; i++) {
+      if (!hasTarget[i]) {
+        condenseAt[i] = 0;
+        releaseAt[i] = 0;
+        continue;
+      }
+      const release = fromWave ? now : now + spanMs * FLOW_RELEASE_SHARE * Math.random();
+      releaseAt[i] = release;
+      condenseAt[i] = Math.min(now + spanMs, release + spanMs * (0.35 + 0.3 * Math.random()));
+    }
   }
 
   /**
@@ -1428,6 +1524,9 @@ export class StarDust {
       gravityBreakUntil,
       windReleaseAt,
       joinAt,
+      condenseAt,
+      releaseAt,
+      flowPhantom,
     } = pool;
 
     const turb = (isReduced ? 0.18 : 1) * currentPhysics.turbulence;
@@ -1462,7 +1561,13 @@ export class StarDust {
       this.pourStartedAt > 0 && !isFree
         ? Math.min(1, (now - this.pourStartedAt) / (this.pourSpanMs + POUR_SETTLE_MS))
         : 1;
-    const dimTransit = isLayoutStage && this.layoutWindow !== null && pourMix >= 1;
+    // formFlowMs: particles in flight must stay visible for the whole flow.
+    const flowInProgress =
+      this.flowStartedAt > 0 &&
+      !isFree &&
+      now < this.flowStartedAt + this.flowSpanMs + FLOW_CONDENSE_MS;
+    const dimTransit =
+      isLayoutStage && this.layoutWindow !== null && pourMix >= 1 && !flowInProgress;
     const hoveredBtnId = this.hoveredRegionId;
 
     const glyphScale = isImageStage
@@ -1607,8 +1712,12 @@ export class StarDust {
     const dOrder = this.dissolveOrder;
     const isDissolving = dissolveProgress > 0;
     const usePerlinWind = currentPhysics.perlinFlow && (isFree || isDissolving);
+    const flowActive =
+      this.flowStartedAt > 0 &&
+      !isFree &&
+      now < this.flowStartedAt + this.flowSpanMs + FLOW_CONDENSE_MS;
     const windField = this.perlinWind;
-    if (usePerlinWind) {
+    if (usePerlinWind || flowActive) {
       windField.update(width, height, time);
     }
 
@@ -1626,6 +1735,8 @@ export class StarDust {
       const pLayer = waveLayer[i];
       // A targeted particle still waiting its turn (formStaggerMs) keeps moving with the wave.
       const isGlyph = hasTarget[i] === 1 && !isFree && now >= joinAt[i];
+      // formFlowMs: how much this particle is still riding the wind (1) vs settled in its shape (0).
+      let pFlowMix = 0;
 
       // Staggered directional wind erosion gust
       const releaseTime = windReleaseAt[i];
@@ -1861,6 +1972,46 @@ export class StarDust {
             pvy = glyphVy;
           }
         }
+
+        // formFlowMs: ride the Perlin wind until this particle's condense time, then ease into place.
+        // The pull to the new place is off from the first frame (otherwise particles start racing to
+        // the new shape, overshoot on momentum and get scattered again: a double transition); what
+        // ramps in is the wind, so the old shape melts where it stands.
+        if (flowActive && releaseAt[i] > 0) {
+          if (now < releaseAt[i]) {
+            // Still part of the old shape: stay put (no pull to the new place yet).
+            pvx = vx[i] * 0.8;
+            pvy = vy[i] * 0.8;
+          } else {
+            const ride = Math.min(1, (now - releaseAt[i]) / FLOW_RAMP_IN_MS);
+            const phantom = flowPhantom[i] === 1;
+            if (phantom && now >= condenseAt[i]) {
+              // An old-shape particle the new shape doesn't use: from here on it's ambient dust.
+              flowPhantom[i] = 0;
+              hasTarget[i] = 0;
+            }
+            const landT = phantom
+              ? 0
+              : Math.max(0, Math.min(1, (now - condenseAt[i]) / FLOW_CONDENSE_MS));
+            const land = landT * landT * (3 - 2 * landT);
+            const flowMix = 1 - land;
+            pFlowMix = ride * flowMix;
+            if (flowMix > 0.001) {
+              const windScale =
+                (ride * FLOW_GAIN * 0.088 * Math.max(0.35, turb) * (0.68 + depth[i] * 0.64)) / pMass;
+              // Each particle also drifts its own way, so neighbours don't travel as one block.
+              const spread = ride * FLOW_SPREAD;
+              const ownX = Math.cos(pPhase * 7.3 + time * 0.6) * spread;
+              const ownY = Math.sin(pPhase * 5.1 + time * 0.5) * spread;
+              // Riding the wind: last frame's momentum plus the wind, without the pull to the target.
+              const flowVx = (vx[i] + windField.sampleX(px, py) * windScale + ownX) * 0.965;
+              const flowVy =
+                (vy[i] + windField.sampleY(px, py) * windScale + ownY + thermalDriftY) * 0.965;
+              pvx = pvx * (1 - flowMix) + flowVx * flowMix;
+              pvy = pvy * (1 - flowMix) + flowVy * flowMix;
+            }
+          }
+        }
       } else if (pLayer >= 0) {
         let u = waveU[i] + waveDriftSpeed * 0.016 * (0.65 + depth[i] * 0.55);
         if (u >= 1) u -= 1;
@@ -2055,7 +2206,18 @@ export class StarDust {
           ) * textAlphaScale;
 
         hueT = glyphHue * (1 - meltBlend) + waveHueT * meltBlend;
+        // Riding the wind (formFlowMs) it keeps the wave's colours, taking the shape's as it lands.
+        if (pFlowMix > 0) hueT += (waveHueT - hueT) * pFlowMix;
         alphaWeight = glyphAlpha * (1 - meltBlend) + waveAlpha * meltBlend;
+        // …and the wave's depth-varied brightness (undimmed: the streams are the subject while they
+        // fly), flattening into the shape's as it lands.
+        if (pFlowMix > 0) {
+          const riderAlpha =
+            pLayer >= 0
+              ? Math.min(1, (0.2 + ridgeFocus * 0.54 + pEnergy * 0.28) * twinkle) * waveAlphaScale
+              : Math.min(1, baseAlpha[i] * twinkle + pEnergy * 0.22) * waveAlphaScale;
+          alphaWeight += (riderAlpha - alphaWeight) * pFlowMix;
+        }
         if (dimTransit) {
           const far = Math.abs(tx[i] - px) + Math.abs(ty[i] - py);
           if (far > 12) alphaWeight *= 1 - 0.95 * Math.min(1, (far - 12) / 90);
@@ -2066,19 +2228,24 @@ export class StarDust {
       }
 
       const lutIdx = Math.min(255, Math.max(0, Math.floor(hueT * 255))) * 3;
-      const plane = isGlyph && meltBlend < 0.5 ? 1 : depthPlane[i];
+      // How much a shape particle still looks like the 3D wave (depth layer, size, shimmer): while it
+      // melts away, or while it rides the wind into a new shape (formFlowMs). 0 = flat in its shape.
+      const waveLook = isGlyph ? Math.max(meltBlend, pFlowMix) : 1;
+      const plane = isGlyph && waveLook < 0.5 ? 1 : depthPlane[i];
       const drawX = px + (plane === 0 ? parX0 : parX1);
       const drawY = py + (plane === 0 ? parY0 : parY1);
 
       const isHoveredBtnSize =
         isGlyph && isLayoutStage && hoveredBtnId >= 0 && regionId[i] === hoveredBtnId;
-      const targetParticleScale = isGlyph ? glyphSizeScale * (1 - meltBlend) + meltBlend : 1;
+      const targetParticleScale = isGlyph ? glyphSizeScale * (1 - waveLook) + waveLook : 1;
       const baseOffset = i * FLOATS_PER_VERTEX;
       const speed = Math.hypot(pvx, pvy);
       speedSum += speed;
       energySum += pEnergy;
       const driftShimmer =
-        isFree || !isGlyph ? 0.16 + positiveCrest * 0.24 : meltBlend * 0.42;
+        isFree || !isGlyph
+          ? 0.16 + positiveCrest * 0.24
+          : Math.max(meltBlend * 0.42, pFlowMix * (0.16 + positiveCrest * 0.24));
       const motionGlow = Math.min(
         1.4,
         speed * 0.34 +

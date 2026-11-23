@@ -260,6 +260,128 @@ try {
   const pouring = await ribbonAlpha();
   check('pouring: the wave stays visible while it pours into a layout', pouring > onWave * 0.6, `${onWave.toFixed(3)} -> ${pouring.toFixed(3)}`);
 
+  // 10. formFlowMs: new shapes melt into the Perlin wind, then condense into place.
+  const flowStats = () => page.evaluate(() => {
+    const p = window.dust.pool;
+    let n = 0, far = 0, dist = 0, speed = 0;
+    for (let i = 0; i < p.count; i++) {
+      if (!p.hasTarget[i]) continue;
+      n++;
+      const d = Math.hypot(p.x[i] - p.tx[i], p.y[i] - p.ty[i]);
+      dist += d; speed += Math.hypot(p.vx[i], p.vy[i]);
+      if (d > 20) far++;
+    }
+    return { n, farShare: n ? far / n : 0, meanDist: n ? dist / n : 0, meanSpeed: n ? speed / n : 0, count: p.count, flowStartedAt: window.dust.flowStartedAt };
+  });
+  const hasTargets = () => page.waitForFunction(() => { const p = window.dust.pool; for (let i = 0; i < p.count; i++) if (p.hasTarget[i]) return true; return false; }, null, { timeout: 10000 });
+  const landed = () => page.waitForFunction(() => {
+    const p = window.dust.pool; let n = 0, d = 0;
+    for (let i = 0; i < p.count; i++) if (p.hasTarget[i]) { n++; d += Math.hypot(p.x[i] - p.tx[i], p.y[i] - p.ty[i]); }
+    return n > 0 && d / n < 8;
+  }, null, { timeout: 20000 });
+
+  // Same wave -> text transition with and without flow, measured at the same moment.
+  const fromWaveAt800 = async (formFlowMs) => {
+    await page.evaluate((f) => window.make(null, { freeDrift: true, text: 'Flow', formFlowMs: f }), formFlowMs);
+    await frames(10);
+    await page.evaluate(() => window.dust.setOptions({ freeDrift: false }));
+    await hasTargets();
+    await page.waitForTimeout(800);
+    return flowStats();
+  };
+  const direct = await fromWaveAt800(0);
+  const riding = await fromWaveAt800(2500);
+  check('formFlowMs: leaving the wave, particles ride the wind first (far more spread than a direct form)',
+    riding.flowStartedAt > 0 && riding.meanDist > direct.meanDist * 2 && riding.meanSpeed > 0.3,
+    `direct ${direct.meanDist.toFixed(1)}px, flow ${riding.meanDist.toFixed(1)}px`);
+  await landed();
+  check('formFlowMs: then they condense into the shape', true);
+
+  await page.evaluate((m) => window.make(m, { formFlowMs: 2500 }), LINKS);
+  await hasTargets();
+  await landed();
+  const formedCount = (await flowStats()).count;
+  await page.evaluate(() => window.dust.setOptions({ targetMode: 'text', text: 'Next' }));
+  await hasTargets();
+  const atStart = await flowStats();
+  await page.waitForTimeout(400);
+  const early = await flowStats();
+  check('formFlowMs: the old shape melts first instead of racing to the new one (no double transition)',
+    early.meanDist > atStart.meanDist * 0.9, `${atStart.meanDist.toFixed(1)}px -> ${early.meanDist.toFixed(1)}px after 0.4s`);
+  await page.waitForTimeout(400);
+  const sceneFlow = await flowStats();
+  check('formFlowMs: scene to scene flows too, without dropping particles', sceneFlow.flowStartedAt > 0 && sceneFlow.count >= formedCount, `${formedCount} -> ${JSON.stringify(sceneFlow)}`);
+  await landed();
+  await page.evaluate(() => window.dust.setOptions({ physics: { ...window.dust.o.physics, density: 'sparse' } }));
+  await hasTargets();
+  await frames(3);
+  check('formFlowMs: a re-layout of the same scene is not flowed', (await flowStats()).flowStartedAt === 0);
+
+  // 11. formFlowMs keeps the wave's colours while particles ride the wind (spread of hues, not one tint).
+  // Colourfulness: mean (max - min) of each particle's RGB (white ≈ 0, magenta/cyan high).
+  const colourSpread = () => page.evaluate(() => {
+    const d = window.dust, p = d.pool, v = d.vertexData;
+    let n = 0, sum = 0;
+    for (let i = 0; i < p.count; i++) {
+      if (!d.o.freeDrift && !p.hasTarget[i]) continue;
+      const r = v[i * 8 + 2], g = v[i * 8 + 3], b = v[i * 8 + 4];
+      n++; sum += Math.max(r, g, b) - Math.min(r, g, b);
+    }
+    return sum / Math.max(1, n);
+  });
+  const leaveWaveSpread = async (formFlowMs) => {
+    await page.evaluate((f) => window.make('<Col><Heading size="xl">Colour</Heading><Text>Layouts use a narrow, light colour band.</Text></Col>', { freeDrift: true, formFlowMs: f, palette: 'aurora' }), formFlowMs);
+    await frames(20);
+    await page.evaluate(() => window.dust.setOptions({ freeDrift: false }));
+    await hasTargets();
+    await frames(5);
+    const size = await page.evaluate(() => {
+      const d = window.dust, p = d.pool, v = d.vertexData;
+      let n = 0, sum = 0;
+      for (let i = 0; i < p.count; i++) if (p.hasTarget[i]) { n++; sum += v[i * 8 + 6]; }
+      return sum / Math.max(1, n);
+    });
+    return { colour: await colourSpread(), size };
+  };
+  const directLook = await leaveWaveSpread(0);
+  const ridingLook = await leaveWaveSpread(3000);
+  const directSpread = directLook.colour, ridingSpread = ridingLook.colour;
+  check('formFlowMs: particles riding the wind keep the wave depth look (size), flattening only as they land',
+    ridingLook.size > directLook.size * 1.1, `mean size direct ${directLook.size.toFixed(2)}, riding ${ridingLook.size.toFixed(2)}`);
+  check('formFlowMs: particles riding the wind keep the wave colours (not the layout tint yet)', ridingSpread > directSpread * 1.25, `colourfulness direct ${directSpread.toFixed(3)}, riding ${ridingSpread.toFixed(3)}`);
+
+  // 12. formFlowMs scene to scene: the old shape keeps all its dust and erodes grain by grain.
+  await page.evaluate((m) => window.make(m, { formFlowMs: 3000 }), LONG);
+  await hasTargets();
+  await landed();
+  const oldShape = await page.evaluate(() => {
+    const p = window.dust.pool; const xs = [], ys = [], idx = [];
+    for (let i = 0; i < p.count; i++) if (p.hasTarget[i]) { idx.push(i); xs.push(p.x[i]); ys.push(p.y[i]); }
+    window.__old = { idx, xs, ys };
+    return idx.length;
+  });
+  const bgWaveAlpha = () => page.evaluate(() => {
+    const p = window.dust.pool, v = window.dust.vertexData; let n = 0, sum = 0;
+    for (let i = 0; i < p.count; i++) if (!p.hasTarget[i] && p.waveLayer[i] >= 0) { n++; sum += v[i * 8 + 5]; }
+    return sum / Math.max(1, n);
+  });
+  const bgBefore = await bgWaveAlpha();
+  // Layout to layout (same stage brightness): part of the current tree is a new, smaller scene.
+  await page.evaluate(() => window.dust.setOptions({ layoutAst: window.dust.o.layoutAst.children[0] }));
+  await hasTargets();
+  await frames(2);
+  const bgAfter = await bgWaveAlpha();
+  check('flow: the background wave doesn\'t light up when one scene flows into another', bgAfter < bgBefore * 1.6, `${bgBefore.toFixed(3)} -> ${bgAfter.toFixed(3)}`);
+  const kept = await page.evaluate(() => { const { idx } = window.__old, p = window.dust.pool; let n = 0; for (const i of idx) if (p.hasTarget[i]) n++; return n; });
+  check('flow: a smaller new shape doesn\'t make the old one lose a chunk at once', kept >= oldShape * 0.98, `${oldShape} in old shape, ${kept} still in it`);
+  await page.waitForTimeout(450);
+  const erosion = await page.evaluate(() => {
+    const { idx, xs, ys } = window.__old, p = window.dust.pool; let still = 0;
+    idx.forEach((i, k) => { if (Math.hypot(p.x[i] - xs[k], p.y[i] - ys[k]) < 2) still++; });
+    return still / idx.length;
+  });
+  check('flow: the old shape erodes grain by grain (some let go, the rest still hold)', erosion > 0.3 && erosion < 0.97, `${(erosion * 100).toFixed(0)}% still in place after ~0.45s`);
+
   check('no page errors', errors.length === 0, errors.join(' | '));
 } finally {
   await browser.close();

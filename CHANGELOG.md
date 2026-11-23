@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+
+Shapes can flow into each other through the Perlin wind.
+
+### Added
+- **`formFlowMs`** (default `0`). When the dust takes a new shape (leaving the free wave, or a new `layoutAst`, `text`, `imageSrc` or `targetMode`), the old shape melts into the Perlin wind and its particles ride the streams for about this many milliseconds, then each condenses into its new place at its own moment. Particles aren't dropped mid-transition, and the transition stays visible the same way as the `formStaggerMs` pour. Re-layouts of the same scene (resize, mind-map toggles, density) aren't flowed. Takes precedence over `formStaggerMs`.
+
 ## 0.6.1
 
 ### Fixed
