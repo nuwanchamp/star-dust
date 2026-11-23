@@ -219,6 +219,27 @@ try {
   check('density is inherited from a container and can be overridden inside it',
     Math.abs(inherited - dense) / dense < 0.1 && Math.abs(overridden - sparse) / sparse < 0.1);
 
+  // 8. formStaggerMs: leaving the wave, particles join their shape over time instead of all at once.
+  const waiting = () => page.evaluate(() => {
+    const p = window.dust.pool, now = performance.now();
+    let targeted = 0, later = 0;
+    for (let i = 0; i < p.count; i++) if (p.hasTarget[i]) { targeted++; if (p.joinAt[i] > now) later++; }
+    return { targeted, later };
+  });
+  const formFromWave = async (opts) => {
+    await page.evaluate((o) => window.make(null, { freeDrift: true, text: 'Hello', ...o }), opts);
+    await frames(5);
+    await page.evaluate(() => window.dust.setOptions({ freeDrift: false }));
+    await page.waitForFunction(() => { const p = window.dust.pool; for (let i = 0; i < p.count; i++) if (p.hasTarget[i]) return true; return false; }, null, { timeout: 10000 });
+    return waiting();
+  };
+  const staggered = await formFromWave({ formStaggerMs: 1500 });
+  check('formStaggerMs: most particles wait on the wave at first', staggered.later > staggered.targeted * 0.6, JSON.stringify(staggered));
+  await page.waitForTimeout(1700);
+  check('formStaggerMs: all have joined after the span', (await waiting()).later === 0);
+  const instant = await formFromWave({});
+  check('default: everything heads for its place at once', instant.targeted > 0 && instant.later === 0, JSON.stringify(instant));
+
   check('no page errors', errors.length === 0, errors.join(' | '));
 } finally {
   await browser.close();

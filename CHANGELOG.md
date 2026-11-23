@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+The free wave can pour into a shape.
+
+### Added
+- **`formStaggerMs`** (default `0`). When dust drifting as the free wave forms text, an image or a layout, particles leave the wave over this many milliseconds, closest to their place first. The rest keep flowing with the wave until their turn, so the wave pours into the shape.
+
+### Fixed
+- The v0.5.0 package reported its version as 0.4.1. The version number is now correct.
+
 ## 0.5.0
 
 Particle density per layout element.

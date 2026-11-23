@@ -12,8 +12,8 @@ This repo contains two things:
 Install a tagged release from GitHub. Each release tag includes the built files, so no build step runs in your project:
 
 ```sh
-bun add github:nuwanchamp/star-dust#v0.4.1
-# or: npm install github:nuwanchamp/star-dust#v0.4.1
+bun add github:nuwanchamp/star-dust#v0.6.0
+# or: npm install github:nuwanchamp/star-dust#v0.6.0
 ```
 
 Then import it as `@encenlab/star-dust`. To upgrade, change the tag. See [CHANGELOG.md](CHANGELOG.md) for what changed.
@@ -43,6 +43,13 @@ dust.setOptions({ text: 'World' });   // only changed options trigger work
 dust.setOptions({ targetMode: 'image', imageSrc: '/logo.png' });
 dust.scatter();                       // wind-blow the formation apart
 dust.destroy();                       // stop the loop, remove listeners, free GPU resources
+```
+
+To have the free wave pour into a shape instead of snapping to it, set `formStaggerMs`. Particles closest to their place leave the wave first:
+
+```ts
+dust.setOptions({ freeDrift: true });                        // drift as the wave
+dust.setOptions({ freeDrift: false, formStaggerMs: 1500 });  // form over 1.5s
 ```
 
 `dust.supported` is `false` when WebGL2 is unavailable. The instance then does nothing.
