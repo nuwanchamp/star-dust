@@ -24,6 +24,9 @@ import type {
   RippleTrigger,
 } from '../types/mote';
 
+/** Smallest side an <Image> is laid out at; sampleImageIntoBox draws nothing below 24px. */
+const MIN_IMAGE_SIDE = 24;
+
 interface ResolvedRect {
   x: number;
   y: number;
@@ -756,8 +759,10 @@ function measureNode(
 
     return {
       node,
-      intrinsicWidth: Math.max(48, Math.round(w)),
-      intrinsicHeight: Math.max(48, Math.round(h)),
+      // 24px is the smallest box the image sampler draws (see sampleImageIntoBox), so small icons
+      // keep the size they ask for instead of being pushed up to 48px.
+      intrinsicWidth: Math.max(MIN_IMAGE_SIDE, Math.round(w)),
+      intrinsicHeight: Math.max(MIN_IMAGE_SIDE, Math.round(h)),
       resolvedImg: img,
       children: [],
     };

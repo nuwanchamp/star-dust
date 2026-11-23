@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+### Fixed
+- `<Image>` no longer has a 48px minimum size, so small icons (e.g. `width="24" height="24"`) are drawn at the size they ask for. The smallest drawable size is 24px.
+
 ## 0.4.0
 
 Icons and other elements can be links.

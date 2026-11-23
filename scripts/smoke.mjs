@@ -39,7 +39,7 @@ ${Array.from({ length: 19 }, (_, i) => `    - Role highlight ${i + 1}`).join('\n
 const ICON = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="9" fill="#2563eb"/></svg>');
 const LINKS = `<Col gap="18"><Heading>Links</Heading><Row gap="18">
 <Image src="${ICON}" width="40" height="40" action="open:https://example.com/profile" />
-<Image src="${ICON}" width="40" height="40" action="open:javascript:alert(1)" />
+<Image src="${ICON}" width="28" height="28" action="open:javascript:alert(1)" />
 </Row></Col>`;
 
 let failures = 0;
@@ -178,6 +178,8 @@ try {
   const openCalls = await page.evaluate(() => window.opened);
   check('clicking an icon with action="open:…" opens the link in a new tab',
     openCalls.length === 1 && openCalls[0][0] === 'https://example.com/profile' && openCalls[0][1] === '_blank', JSON.stringify(openCalls));
+  check('a 28px icon keeps its size (hit box 28 + 2×4 padding)',
+    await page.evaluate(() => window.dust.layoutHitRegions.find((r) => r.action.includes('javascript')).width === 36));
   const bad = await iconCenter('javascript');
   await page.mouse.click(bad.x, bad.y);
   check('javascript: links are not opened (action still reported)',
