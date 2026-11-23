@@ -43,6 +43,8 @@ export interface DustCanvasProps extends StarDustCallbacks {
   layoutScrollHint?: boolean;
   /** See `StarDustOptions.layoutAutoDissolve`. Default `false`. */
   layoutAutoDissolve?: boolean;
+  /** See `StarDustOptions.openLinks`. Default `true`. */
+  openLinks?: boolean;
   /** See `StarDustOptions.mindMapFit`. Default `'collapse'`. */
   mindMapFit?: MindMapFit;
   /** See `StarDustOptions.mindMapMaxScale`. Default 1.6. */

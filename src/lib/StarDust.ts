@@ -154,6 +154,12 @@ export interface StarDustOptions extends StarDustCallbacks {
    */
   layoutAutoDissolve?: boolean;
   /**
+   * Open `open:<url>` layout actions (e.g. `<Image action="open:https://…">`) in a new tab. Only
+   * http(s), mailto and tel links are opened; `onLayoutAction` still fires either way. Default `true`;
+   * set `false` to handle navigation yourself.
+   */
+  openLinks?: boolean;
+  /**
    * How formed text follows a scroll, 0..1. `0` (default): it moves rigidly with the content and stays
    * crisp. `1`: particles trail behind on their springs and catch up (dreamier, blurs while moving).
    * Values in between mix the two. Takes effect immediately.
@@ -196,6 +202,7 @@ type ResolvedOptions = Omit<StarDustOptions, 'physics' | 'ripple'> & {
   layoutWindow: LayoutWindowMode;
   layoutScrollHint: boolean;
   layoutAutoDissolve: boolean;
+  openLinks: boolean;
   mindMapFit: MindMapFit;
   mindMapMaxScale: number;
   freeDrift: boolean;
@@ -242,6 +249,7 @@ const DEFAULTS: Omit<ResolvedOptions, keyof StarDustCallbacks> = {
   layoutWindow: 'auto',
   layoutScrollHint: true,
   layoutAutoDissolve: false,
+  openLinks: true,
   mindMapFit: 'collapse',
   mindMapMaxScale: 1.6,
   collapsedMindMapIds: undefined,
@@ -807,6 +815,20 @@ export class StarDust {
     this.o.onSoundImpulse?.(0.7, (hit.x + hit.width * 0.5) / Math.max(1, this.size.width));
     this.toggleMindMapNode(hit.action);
     this.o.onLayoutAction?.(hit.action, hit);
+    this.openLink(hit.action);
+  }
+
+  /** `open:<url>` actions open in a new tab (http, https, mailto, tel only). */
+  private openLink(action: string): void {
+    if (!this.o.openLinks || !action.startsWith('open:') || typeof window === 'undefined') return;
+    let url: URL;
+    try {
+      url = new URL(action.slice('open:'.length).trim(), window.location.href);
+    } catch {
+      return;
+    }
+    if (!['http:', 'https:', 'mailto:', 'tel:'].includes(url.protocol)) return;
+    window.open(url.href, '_blank', 'noopener,noreferrer');
   }
 
   /**

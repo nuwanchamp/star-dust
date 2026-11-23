@@ -1601,6 +1601,24 @@ export function sampleLayoutScene(
       wavelength: ripple.wavelength,
     });
 
+    // Any element (not just <Button>) can be clickable via an `action` attribute, e.g. an icon link:
+    // <Image src="/icons/x.svg" action="open:https://…" />. Its particles are never thinned.
+    const leafAction = node.attrs.action;
+    if (leafAction && node.tag !== 'Button' && node.tag !== 'MindMap') {
+      const hitPad = 4;
+      hitRegions.push({
+        id: hitRegions.length,
+        rippleRegionId: regionId,
+        x: rect.x - hitPad,
+        y: rect.y - hitPad,
+        width: rect.width + hitPad * 2,
+        height: rect.height + hitPad * 2,
+        action: leafAction,
+        label: node.attrs.label || node.attrs.alt || node.text || leafAction,
+      });
+      buttonRegionIds.add(regionId);
+    }
+
     if (node.tag === 'Image') {
       imageLeaves.push({ leaf, regionId });
       continue;
@@ -2263,12 +2281,23 @@ export function sampleLayoutScene(
     const localBlurStyle: ImageBlurStyle =
       attrs.blurStyle === 'edge' ? 'edge' : attrs.blurStyle === 'radial' ? 'radial' : imageTuning.blurStyle;
 
+    // Icons and other small images: no edge fade by default (it turns a small square into a blob),
+    // and a particle count proportional to their area instead of the per-image minimum.
+    const isSmall = Math.min(leaf.rect.width, leaf.rect.height) <= 96;
+    const spacing = density === 'dense' ? 0.8 : density === 'balanced' ? 1.1 : 1.5;
+    const imageTarget = Math.min(
+      perImageBudget,
+      Math.max(150, Math.round((leaf.rect.width * leaf.rect.height) / (spacing * spacing)))
+    );
+
     const localTuning: ImageTuningConfig = {
       blurStyle: localBlurStyle,
       edgeBlur: blurDisabled
         ? 0
         : attrs.blur !== undefined
         ? parseNum(attrs.blur, imageTuning.edgeBlur)
+        : isSmall
+        ? 0
         : imageTuning.edgeBlur,
       contrast:
         attrs.contrast !== undefined ? parseNum(attrs.contrast, imageTuning.contrast) : imageTuning.contrast,
@@ -2285,7 +2314,7 @@ export function sampleLayoutScene(
       localInvert,
       isDarkTheme,
       localTuning,
-      perImageBudget
+      imageTarget
     );
 
     // Refine ripple center to exact sampled subject silhouette bounds

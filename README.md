@@ -12,8 +12,8 @@ This repo contains two things:
 Install a tagged release from GitHub. Each release tag includes the built files, so no build step runs in your project:
 
 ```sh
-bun add github:nuwanchamp/star-dust#v0.3.0
-# or: npm install github:nuwanchamp/star-dust#v0.3.0
+bun add github:nuwanchamp/star-dust#v0.4.0
+# or: npm install github:nuwanchamp/star-dust#v0.4.0
 ```
 
 Then import it as `@encenlab/star-dust`. To upgrade, change the tag. See [CHANGELOG.md](CHANGELOG.md) for what changed.
@@ -67,6 +67,18 @@ import { parseLayoutMarkup } from '@encenlab/star-dust'; // also available from 
 const { root, error } = parseLayoutMarkup(markup);   // error: { message, line } | null
 dust.setOptions({ targetMode: 'layout', layoutAst: root, onLayoutAction: (action) => { /* ... */ } });
 ```
+
+**Clickable elements and links.** Any element can take an `action`, not just `<Button>`. For example, icon links:
+
+```html
+<Row gap="18">
+  <Image src="/icons/linkedin.svg" width="40" height="40" action="open:https://linkedin.com/in/you" />
+  <Image src="/icons/github.svg" width="40" height="40" action="open:https://github.com/you" />
+  <Text action="open:mailto:you@example.com">you@example.com</Text>
+</Row>
+```
+
+Clickable elements get the hover glow, a pointer cursor, keyboard focus (Tab, then Enter), and `onLayoutAction(action)`. `open:<url>` actions also open the link in a new tab (`noopener`). Only `http`, `https`, `mailto` and `tel` links are opened. Set `openLinks: false` to handle navigation yourself. Small images (96px or less) are drawn without the soft edge fade and with a particle count matched to their size, so icons stay crisp. SVGs with only a `viewBox` (common in icon sets) render whole.
 
 Layouts stay formed while someone reads them. Text and image modes melt into the wave after `physics.autoDissolveSec` (20s) of inactivity, but layouts only do so with `layoutAutoDissolve: true`.
 

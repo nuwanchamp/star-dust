@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+Icons and other elements can be links.
+
+### Added
+- **Actions on any layout element.** `<Image>`, `<Text>`, `<Heading>` and so on can take an `action` (e.g. icon links). They get the hover glow, pointer cursor, keyboard focus and `onLayoutAction`.
+- **`open:<url>` actions open the link in a new tab** (`openLinks`, default `true`; only http, https, mailto and tel).
+
+### Fixed
+- SVGs with only a `viewBox` (no width/height) were cropped, showing only their top-left part. They are now rasterized once on load and render whole.
+- Small images and icons (96px or less) no longer turn into blurry blobs: they skip the default edge fade and use a particle count proportional to their size.
+
 ## 0.3.0
 
 Mind maps stay readable and whole at any size.

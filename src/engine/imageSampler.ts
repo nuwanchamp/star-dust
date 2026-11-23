@@ -180,9 +180,48 @@ export function loadImageElement(src: string): Promise<HTMLImageElement> {
     if (/^https?:/i.test(src)) {
       img.crossOrigin = 'anonymous';
     }
-    img.onload = () => resolve(img);
+    img.onload = () => {
+      if (isSvgSource(src)) rasterizeSvg(img).then(resolve, () => resolve(img));
+      else resolve(img);
+    };
     img.onerror = () => reject(new Error('Failed to load image'));
     img.src = src;
+  });
+}
+
+function isSvgSource(src: string): boolean {
+  return /^data:image\/svg\+xml/i.test(src) || /\.svg(?:[?#]|$)/i.test(src);
+}
+
+/**
+ * Turn an SVG into a bitmap image of known size. An SVG with a viewBox but no width/height has an
+ * ambiguous intrinsic size (naturalWidth says 150, but cropping it through drawImage's source rectangle
+ * uses another size), which crops icons wrongly. Drawing it whole into a canvas first removes that.
+ * Rejects (caller keeps the original) if the canvas can't be read back, e.g. a cross-origin SVG
+ * without CORS.
+ */
+function rasterizeSvg(img: HTMLImageElement): Promise<HTMLImageElement> {
+  const nw = img.naturalWidth || 150;
+  const nh = img.naturalHeight || 150;
+  const longSide = 512;
+  const scale = longSide / Math.max(nw, nh);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(nw * scale));
+  canvas.height = Math.max(1, Math.round(nh * scale));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return Promise.reject(new Error('no 2d context'));
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  let url: string;
+  try {
+    url = canvas.toDataURL('image/png');
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  return new Promise((resolve, reject) => {
+    const raster = new Image();
+    raster.onload = () => resolve(raster);
+    raster.onerror = () => reject(new Error('Failed to rasterize SVG'));
+    raster.src = url;
   });
 }
 
