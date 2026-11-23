@@ -5,7 +5,12 @@ import {
   loadImageElement,
   sampleImageTargets,
 } from '../engine/imageSampler';
-import { defaultLayoutImageUrl, sampleLayoutScene } from '../engine/layoutEngine';
+import {
+  type LayoutOverflow,
+  type LayoutPaddingBox,
+  defaultLayoutImageUrl,
+  sampleLayoutScene,
+} from '../engine/layoutEngine';
 import { collectLayoutImageRefs } from '../engine/layoutParser';
 import {
   type ParticlePool,
@@ -13,7 +18,10 @@ import {
   createParticlePool,
   resizeParticlePool,
 } from '../engine/particlePool';
+import { type LayoutBandBounds, LayoutWindow, type LayoutWindowMode } from '../engine/layoutWindow';
+import type { MindMapFit } from '../engine/mindMapLayout';
 import { PerlinWindField } from '../engine/perlinNoise';
+import { ScrollHints } from '../engine/scrollHint';
 import {
   type SampledPoint,
   assignTargetsByProximity,
@@ -40,6 +48,12 @@ import type {
 
 export type TargetMode = 'text' | 'image' | 'layout';
 
+/** A number (all sides) or per-side values; missing sides use the default (32px, 16px below 640px wide). */
+export type LayoutPaddingValue = number | Partial<LayoutPaddingBox>;
+/** Static padding, or a function of the canvas size (CSS px). */
+export type LayoutPadding = LayoutPaddingValue | ((width: number, height: number) => LayoutPaddingValue);
+export type { LayoutOverflow, LayoutPaddingBox, LayoutWindowMode, LayoutBandBounds, MindMapFit };
+
 export interface MotionMetrics {
   particleCount: number;
   avgVelocity: number;
@@ -63,6 +77,8 @@ export interface StarDustCallbacks {
   onAutoDissolvedToWave?: () => void;
   /** The user pressed on the canvas. */
   onUserActivity?: () => void;
+  /** The layout scrolled. `top` is the current offset, `max` the largest possible offset. */
+  onScroll?: (top: number, max: number) => void;
   /** Aggregate motion stats, roughly every 65 ms (useful for driving audio). */
   onMotionMetrics?: (metrics: MotionMetrics) => void;
   /** A burst-like interaction happened; `normX` is the horizontal position in 0..1. */
@@ -82,7 +98,67 @@ export interface StarDustOptions extends StarDustCallbacks {
   layoutAst?: LayoutNode | null;
   /** Pixels reserved on the left in layout mode (e.g. for a side panel). */
   layoutLeftInset?: number;
+  /**
+   * Take over mind map expand/collapse: ids toggled relative to the markup's `collapsed` attribute.
+   * Leave undefined (default) and the engine manages it: clicking a node opens or closes it, and
+   * `mindMapFit` keeps the map readable. When set, your app must handle `mindmap:toggle:<id>` actions.
+   */
   collapsedMindMapIds?: Set<string>;
+  /**
+   * When a mind map is too big to show at a readable size: `'collapse'` (default) collapses its deepest
+   * levels (the root and first level always show; `+N` badges open them), closes older branches when a
+   * new one needs room, and on narrow screens switches a radial map to a tree. `'shrink'` scales it down
+   * to fit instead (the pre-0.3 behavior). Only applies when the engine manages collapse state.
+   */
+  mindMapFit?: MindMapFit;
+  /**
+   * A mind map that fits is enlarged to use free space (bigger labels are crisper), up to this factor,
+   * using at most ~92% of the width and ~70% of the height so content around it still fits.
+   * 1 = keep the natural size. Default 1.6.
+   */
+  mindMapMaxScale?: number;
+  /**
+   * What happens when a layout is taller than the canvas. `'scroll'` (default) keeps text at a
+   * readable size (see `layoutMinFontSize`) and lets the wheel, trackpad or touch-drag scroll it.
+   * `'fit'` shrinks the whole layout to fit, however small that makes it.
+   */
+  layoutOverflow?: LayoutOverflow;
+  /** Smallest font size (px) `'scroll'` mode may shrink layout text to before scrolling. Default 14. */
+  layoutMinFontSize?: number;
+  /** Space kept clear around a layout. Default 32px (16px below 640px wide). */
+  layoutPadding?: LayoutPadding;
+  /**
+   * Particles spent on one screen of layout content. Higher = crisper text, more CPU/GPU work.
+   * Long layouts are windowed, so this is per screen, not per layout. Default by density:
+   * 16.5k (sparse), 30k (balanced), 45k (dense).
+   */
+  layoutParticleBudget?: number;
+  /**
+   * Which part of a layout gets particles when there aren't enough for all of it.
+   * - `'auto'` (default): a clear band from the top of the layout that grows down until
+   *   `layoutParticleBudget` is used, ending between two lines. Text is never thinned; content past
+   *   the band is not drawn until you scroll it in. Dense content gives a shorter band.
+   * - `'screen'`: the whole screen; if it holds more than the budget, all text is thinned evenly.
+   * - a number: a band of that many px; thinned if it holds more than the budget.
+   */
+  layoutWindow?: LayoutWindowMode;
+  /**
+   * Show particle chevrons when a layout can scroll: below the clear band while more content follows,
+   * above it once scrolled down. Clicking one scrolls. Default `true`; turn off to draw your own
+   * (see `layoutBand`, `scrollTop`, `scrollHeight`, `onScroll`).
+   */
+  layoutScrollHint?: boolean;
+  /**
+   * Let a layout melt into the wave after `physics.autoDissolveSec` of inactivity. Default `false`:
+   * layouts are for reading, so they stay formed. Text and image modes always use `autoDissolveSec`.
+   */
+  layoutAutoDissolve?: boolean;
+  /**
+   * How formed text follows a scroll, 0..1. `0` (default): it moves rigidly with the content and stays
+   * crisp. `1`: particles trail behind on their springs and catch up (dreamier, blurs while moving).
+   * Values in between mix the two. Takes effect immediately.
+   */
+  layoutScrollTrail?: number;
   /**
    * Maps a layout `<Image src="...">` value to a URL (or null to skip it). Receives the current
    * `imageSrc`. Default: no src / "current" / "uploaded" → `imageSrc`, anything else used as a URL.
@@ -114,6 +190,14 @@ type ResolvedOptions = Omit<StarDustOptions, 'physics' | 'ripple'> & {
   imageTuning: ImageTuningConfig;
   layoutAst: LayoutNode | null;
   layoutLeftInset: number;
+  layoutOverflow: LayoutOverflow;
+  layoutMinFontSize: number;
+  layoutScrollTrail: number;
+  layoutWindow: LayoutWindowMode;
+  layoutScrollHint: boolean;
+  layoutAutoDissolve: boolean;
+  mindMapFit: MindMapFit;
+  mindMapMaxScale: number;
   freeDrift: boolean;
   physics: PhysicsConfig;
   ripple: RippleConfig;
@@ -150,6 +234,16 @@ const DEFAULTS: Omit<ResolvedOptions, keyof StarDustCallbacks> = {
   imageTuning: DEFAULT_IMAGE_TUNING,
   layoutAst: null,
   layoutLeftInset: 0,
+  layoutOverflow: 'scroll',
+  layoutMinFontSize: 14,
+  layoutPadding: undefined,
+  layoutParticleBudget: undefined,
+  layoutScrollTrail: 0,
+  layoutWindow: 'auto',
+  layoutScrollHint: true,
+  layoutAutoDissolve: false,
+  mindMapFit: 'collapse',
+  mindMapMaxScale: 1.6,
   collapsedMindMapIds: undefined,
   freeDrift: false,
   physics: DEFAULT_PHYSICS,
@@ -183,6 +277,26 @@ function sameTuning(a: ImageTuningConfig, b: ImageTuningConfig): boolean {
     a.contrast === b.contrast &&
     a.detail === b.detail
   );
+}
+
+function resolveLayoutPadding(
+  padding: LayoutPadding | undefined,
+  width: number,
+  height: number
+): LayoutPaddingBox {
+  const def = width < 640 ? 16 : 32;
+  const value = typeof padding === 'function' ? padding(width, height) : padding;
+  if (typeof value === 'number') return { top: value, right: value, bottom: value, left: value };
+  return {
+    top: value?.top ?? def,
+    right: value?.right ?? def,
+    bottom: value?.bottom ?? def,
+    left: value?.left ?? def,
+  };
+}
+
+function samePadding(a: LayoutPaddingBox, b: LayoutPaddingBox): boolean {
+  return a.top === b.top && a.right === b.right && a.bottom === b.bottom && a.left === b.left;
 }
 
 function whenFontsReady(): Promise<unknown> {
@@ -347,6 +461,26 @@ export class StarDust {
     recentClicks: [],
   };
 
+  // Layout scrolling: current offset, eased-toward goal, and the largest offset.
+  private scrollPos = 0;
+  private scrollGoal = 0;
+  private scrollLimit = 0;
+  private touchScroll: { startY: number; startGoal: number; active: boolean } | null = null;
+  /** Set while a scrollable layout is shown: hands particles to whatever is on screen. */
+  private layoutWindow: LayoutWindow | null = null;
+  /** "More content" chevrons built from particles. */
+  private hints = new ScrollHints();
+  private hintHover = false;
+  /** Layout button focused with the keyboard (its rippleRegionId), or -1. */
+  private kbFocusId = -1;
+  /** Engine-managed mind map state: nodes the user opened (value: recency) / closed, and what is shown closed. */
+  private mmExpanded = new Map<string, number>();
+  private mmCollapsed = new Set<string>();
+  private mmShownCollapsed = new Set<string>();
+  /** Page shown for branches whose children are paged ("+N more ▸"). */
+  private mmPages = new Map<string, number>();
+  private mmClock = 0;
+
   private rafId = 0;
   private startTime = 0;
   private shockUniforms: ShockwaveUniform[] = [];
@@ -402,6 +536,11 @@ export class StarDust {
     this.listen(canvas, 'pointerup', (e) => this.handlePointerUp(e as PointerEvent));
     this.listen(canvas, 'pointerleave', () => this.handlePointerLeave());
     this.listen(canvas, 'pointercancel', () => this.handlePointerLeave());
+    this.listen(canvas, 'wheel', (e) => this.handleWheel(e as WheelEvent), { passive: false });
+    this.listen(canvas, 'keydown', (e) => this.handleKeyDown(e as KeyboardEvent));
+    this.listen(canvas, 'blur', () => this.setKeyboardFocus(-1));
+    // Focusable so keyboard users can scroll and reach layout buttons (keeps an explicit tabindex).
+    if (!canvas.hasAttribute('tabindex')) canvas.tabIndex = 0;
 
     if (typeof ResizeObserver !== 'undefined') {
       const ro = new ResizeObserver(() => this.handleResize());
@@ -441,7 +580,11 @@ export class StarDust {
     const o = mergeOptions(prev, next);
     this.o = o;
 
-    if (o.freeDrift !== prev.freeDrift || o.physics.autoDissolveSec !== prev.physics.autoDissolveSec) {
+    if (
+      o.freeDrift !== prev.freeDrift ||
+      o.physics.autoDissolveSec !== prev.physics.autoDissolveSec ||
+      o.layoutAutoDissolve !== prev.layoutAutoDissolve
+    ) {
       this.resetIdleDissolve();
     }
     if (o.physics.cursorMode !== prev.physics.cursorMode || o.manageCursor !== prev.manageCursor) {
@@ -460,8 +603,28 @@ export class StarDust {
       PALETTE_THEMES[o.palette].isDark !== PALETTE_THEMES[prev.palette].isDark ||
       o.freeDrift !== prev.freeDrift ||
       o.physics.density !== prev.physics.density ||
-      o.physics.fontStyle !== prev.physics.fontStyle;
+      o.physics.fontStyle !== prev.physics.fontStyle ||
+      (o.targetMode === 'layout' &&
+        (o.layoutOverflow !== prev.layoutOverflow ||
+          o.layoutMinFontSize !== prev.layoutMinFontSize ||
+          o.layoutParticleBudget !== prev.layoutParticleBudget ||
+          o.layoutWindow !== prev.layoutWindow ||
+          o.mindMapFit !== prev.mindMapFit ||
+          o.mindMapMaxScale !== prev.mindMapMaxScale ||
+          !samePadding(
+            resolveLayoutPadding(o.layoutPadding, this.size.width, this.size.height),
+            resolveLayoutPadding(prev.layoutPadding, this.size.width, this.size.height)
+          )));
 
+    if (o.layoutAst !== prev.layoutAst || o.targetMode !== prev.targetMode) {
+      this.setKeyboardFocus(-1);
+    }
+    if (o.layoutAst !== prev.layoutAst) {
+      this.mmExpanded.clear();
+      this.mmCollapsed.clear();
+      this.mmShownCollapsed.clear();
+      this.mmPages.clear();
+    }
     if (needsRetarget && this.supported) {
       this.refreshTargets();
     }
@@ -492,6 +655,47 @@ export class StarDust {
     this.resetIdleDissolve();
   }
 
+  /** Current layout scroll offset in px (0 when the layout fits). */
+  get scrollTop(): number {
+    return this.scrollPos;
+  }
+
+  /** Largest possible layout scroll offset in px (0 when the layout fits). */
+  get scrollHeight(): number {
+    return this.scrollLimit;
+  }
+
+  /**
+   * Clickable layout regions (`<Button>`s, collapsible mind-map nodes) in canvas CSS px, at the current
+   * scroll position. Useful for overlaying accessible DOM controls.
+   */
+  get layoutHitRegions(): readonly LayoutHitRegion[] {
+    return this.hitRegions.filter((r) => this.isInBand(r));
+  }
+
+  /**
+   * The on-screen band (canvas px) where layout content is currently drawn, or null when the whole
+   * layout is drawn. Useful for placing a scroll hint or fade below it.
+   */
+  get layoutBand(): LayoutBandBounds | null {
+    return this.layoutWindow ? this.layoutWindow.band(this.scrollPos) : null;
+  }
+
+  /**
+   * Scroll a layout that overflows the canvas (smooth by default). Formed text moves with the scroll;
+   * content leaving the screen dissolves and its particles re-form the content coming in.
+   */
+  scrollTo(top: number, options: { smooth?: boolean } = {}): void {
+    if (this.destroyed) return;
+    this.scrollGoal = Math.max(0, Math.min(this.scrollLimit, top));
+    if (options.smooth === false) this.applyScroll(this.scrollGoal - this.scrollPos);
+  }
+
+  /** Scroll by a relative amount (see `scrollTo`). */
+  scrollBy(dy: number, options: { smooth?: boolean } = {}): void {
+    this.scrollTo(this.scrollGoal + dy, options);
+  }
+
   /** Stop the animation loop, remove all listeners and release GPU resources. */
   destroy(): void {
     if (this.destroyed) return;
@@ -508,9 +712,236 @@ export class StarDust {
 
   // ---------------------------------------------------------------------------
 
-  private listen(target: EventTarget, type: string, fn: (e: Event) => void): void {
-    target.addEventListener(type, fn);
-    this.cleanups.push(() => target.removeEventListener(type, fn));
+  private listen(
+    target: EventTarget,
+    type: string,
+    fn: (e: Event) => void,
+    options?: AddEventListenerOptions
+  ): void {
+    target.addEventListener(type, fn, options);
+    this.cleanups.push(() => target.removeEventListener(type, fn, options));
+  }
+
+  /** Whether a hit region is inside the drawn band (buttons outside it are invisible, so not clickable). */
+  private isInBand(r: LayoutHitRegion): boolean {
+    if (!this.layoutWindow) return true;
+    const band = this.layoutWindow.band(this.scrollPos);
+    const cy = r.y + r.height * 0.5;
+    return cy >= band.top - 2 && cy <= band.bottom + 2;
+  }
+
+  private canScroll(): boolean {
+    return this.o.targetMode === 'layout' && !this.o.freeDrift && this.scrollLimit > 0;
+  }
+
+  /** Move the content by `dy` px: shift particle targets and hit/ripple regions; particles follow on their springs. */
+  private applyScroll(dy: number): void {
+    if (dy === 0) return;
+    this.scrollPos += dy;
+    // Formed text moves with the scroll (fully when layoutScrollTrail is 0: crisp, like a page) and
+    // springs the rest of the way; content entering or leaving the window dissolves and re-forms
+    // (LayoutWindow.update below).
+    const trail = Math.max(0, Math.min(1, this.o.layoutScrollTrail));
+    const carry = dy * (1 - trail);
+    const { count, hasTarget, ty, y } = this.pool;
+    for (let i = 0; i < count; i++) {
+      if (hasTarget[i] === 1 && !this.hints.isHint(i)) {
+        ty[i] -= dy;
+        y[i] -= carry;
+      }
+    }
+    for (const r of this.hitRegions) r.y -= dy;
+    for (const r of this.rippleRegions) {
+      r.y -= dy;
+      r.cy -= dy;
+    }
+    this.layoutWindow?.update(this.pool, this.scrollPos, performance.now());
+    this.resetIdleDissolve();
+    this.o.onScroll?.(this.scrollPos, this.scrollLimit);
+  }
+
+  private updateScrollHints(time: number, now: number): void {
+    const w = this.layoutWindow;
+    if (!this.o.layoutScrollHint || !w || !this.canScroll()) {
+      this.hints.clear(this.pool, now);
+      return;
+    }
+    const band = w.band(this.scrollPos);
+    this.hints.update(
+      this.pool,
+      {
+        centerX: w.centerX,
+        bandTop: band.top,
+        bandBottom: band.bottom,
+        canvasHeight: this.size.height,
+        showDown: this.scrollGoal < this.scrollLimit - 1,
+        showUp: this.scrollGoal > 1,
+      },
+      time,
+      now
+    );
+  }
+
+  /** Scroll roughly one band in a direction (used by the hint chevrons). */
+  private pageScroll(dir: 1 | -1): void {
+    const band = this.layoutWindow?.band(this.scrollPos);
+    const step = band ? Math.max(120, (band.bottom - band.top) * 0.8) : this.size.height * 0.8;
+    this.scrollBy(dir * step);
+  }
+
+  /** A layout button was clicked or pressed: glow, shockwave, sound, then `onLayoutAction`. */
+  private activateHit(hit: LayoutHitRegion): void {
+    const pool = this.pool;
+    for (let i = 0; i < pool.count; i++) {
+      if (pool.regionId[i] === hit.rippleRegionId) {
+        pool.energy[i] = 1;
+      }
+    }
+    this.shockwaves.push({
+      x: hit.x + hit.width * 0.5,
+      y: hit.y + hit.height * 0.5,
+      radius: 10,
+      maxRadius: Math.max(130, hit.width * 0.9),
+      alpha: 0.42,
+    });
+    this.o.onSoundImpulse?.(0.7, (hit.x + hit.width * 0.5) / Math.max(1, this.size.width));
+    this.toggleMindMapNode(hit.action);
+    this.o.onLayoutAction?.(hit.action, hit);
+  }
+
+  /**
+   * Engine-managed mind maps: `mindmap:toggle:<id>` opens or closes a node; `mindmap:page:<id>:next|prev`
+   * shows the next or previous set of a paged branch's children.
+   */
+  private toggleMindMapNode(action: string): void {
+    if (this.o.collapsedMindMapIds !== undefined) return;
+    const page = /^mindmap:page:(.+):(next|prev)$/.exec(action);
+    if (page) {
+      const [, id, dir] = page;
+      const current = this.mmPages.get(id) ?? 0;
+      this.mmPages.set(id, Math.max(0, current + (dir === 'next' ? 1 : -1)));
+      if (this.supported) this.refreshTargets();
+      return;
+    }
+    const prefix = 'mindmap:toggle:';
+    if (!action.startsWith(prefix)) return;
+    const id = action.slice(prefix.length);
+    if (!id) return;
+    this.mmPages.delete(id); // a re-opened branch starts on its first page
+    if (this.mmShownCollapsed.has(id)) {
+      this.mmCollapsed.delete(id);
+      this.mmExpanded.set(id, ++this.mmClock);
+    } else {
+      this.mmExpanded.delete(id);
+      this.mmCollapsed.add(id);
+    }
+    if (this.supported) this.refreshTargets();
+  }
+
+  /** Highlight a layout button for keyboard users (reuses the hover glow); -1 clears it. */
+  private setKeyboardFocus(rippleRegionId: number): void {
+    if (this.kbFocusId === rippleRegionId) return;
+    const hadFocus = this.kbFocusId >= 0;
+    this.kbFocusId = rippleRegionId;
+    if (rippleRegionId >= 0 || hadFocus) {
+      this.hoveredRegionId = rippleRegionId;
+      this.syncHover(rippleRegionId >= 0);
+    }
+  }
+
+  /** Scroll just enough that a region sits inside the clear band. */
+  private scrollIntoBand(r: LayoutHitRegion): void {
+    if (!this.canScroll()) return;
+    const band = this.layoutWindow?.band(this.scrollPos) ?? { top: 0, bottom: this.size.height };
+    const pad = 24;
+    if (r.y < band.top + pad) {
+      this.scrollTo(this.scrollGoal + r.y - (band.top + pad));
+    } else if (r.y + r.height > band.bottom - pad) {
+      this.scrollTo(this.scrollGoal + r.y + r.height - (band.bottom - pad));
+    }
+  }
+
+  private handleKeyDown(e: KeyboardEvent): void {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const layout = this.o.targetMode === 'layout' && !this.o.freeDrift;
+    if (!layout) return;
+
+    // Tab / Shift+Tab: step through layout buttons in reading order; leave the canvas at either end.
+    if (e.key === 'Tab') {
+      const order = this.hitRegions
+        .slice()
+        .sort((a, b) => (Math.abs(a.y - b.y) > 4 ? a.y - b.y : a.x - b.x));
+      if (order.length === 0) return;
+      const cur = order.findIndex((r) => r.rippleRegionId === this.kbFocusId);
+      const next = cur === -1 ? (e.shiftKey ? order.length - 1 : 0) : cur + (e.shiftKey ? -1 : 1);
+      if (next < 0 || next >= order.length) {
+        this.setKeyboardFocus(-1);
+        return;
+      }
+      e.preventDefault();
+      this.setKeyboardFocus(order[next].rippleRegionId);
+      this.scrollIntoBand(order[next]);
+      return;
+    }
+
+    if (e.key === 'Escape') {
+      this.setKeyboardFocus(-1);
+      return;
+    }
+
+    // Enter / Space on a focused button activates it.
+    if ((e.key === 'Enter' || e.key === ' ') && this.kbFocusId >= 0) {
+      const hit = this.hitRegions.find((r) => r.rippleRegionId === this.kbFocusId);
+      if (hit) {
+        e.preventDefault();
+        this.activateHit(hit);
+        return;
+      }
+    }
+
+    if (!this.canScroll()) return;
+    const band = this.layoutWindow?.band(this.scrollPos);
+    const page = band ? Math.max(120, (band.bottom - band.top) * 0.85) : this.size.height * 0.85;
+    let goal: number | null = null;
+    switch (e.key) {
+      case 'ArrowDown':
+        goal = this.scrollGoal + 48;
+        break;
+      case 'ArrowUp':
+        goal = this.scrollGoal - 48;
+        break;
+      case 'PageDown':
+        goal = this.scrollGoal + page;
+        break;
+      case 'PageUp':
+        goal = this.scrollGoal - page;
+        break;
+      case ' ':
+        goal = this.scrollGoal + (e.shiftKey ? -page : page);
+        break;
+      case 'Home':
+        goal = 0;
+        break;
+      case 'End':
+        goal = this.scrollLimit;
+        break;
+    }
+    if (goal === null) return;
+    const clamped = Math.max(0, Math.min(this.scrollLimit, goal));
+    // Like the wheel: at either end, let the key through so the host page can scroll.
+    if (clamped === this.scrollGoal) return;
+    e.preventDefault();
+    this.scrollGoal = clamped;
+  }
+
+  private handleWheel(e: WheelEvent): void {
+    if (!this.canScroll() || e.ctrlKey) return;
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.size.height * 0.9 : 1;
+    const next = Math.max(0, Math.min(this.scrollLimit, this.scrollGoal + e.deltaY * unit));
+    // At either end, let the event through so the host page can scroll.
+    if (next === this.scrollGoal) return;
+    e.preventDefault();
+    this.scrollGoal = next;
   }
 
   private toLocal(e: PointerEvent): { lx: number; ly: number } {
@@ -544,7 +975,7 @@ export class StarDust {
   private updateCursor(): void {
     if (!this.o.manageCursor) return;
     this.canvas.style.cursor =
-      this.hoveredRegionId >= 0
+      this.hoveredRegionId >= 0 || this.hintHover
         ? 'pointer'
         : this.o.physics.cursorMode === 'off'
         ? 'default'
@@ -658,6 +1089,8 @@ export class StarDust {
     let targets: SampledPoint[] = [];
     let fontSize = 72;
     let isImage = false;
+    let layoutScrollLimit = 0;
+    let windowed: LayoutWindow | null = null;
     this.hitRegions = [];
     this.rippleRegions = [];
 
@@ -707,12 +1140,52 @@ export class StarDust {
           this.o.imageTuning,
           this.layoutImageCache,
           this.resolveImage,
-          this.o.layoutLeftInset,
-          this.o.collapsedMindMapIds
+          {
+            leftInset: this.o.layoutLeftInset,
+            collapsedMindMapIds: this.o.collapsedMindMapIds,
+            mindMapExpanded: this.mmExpanded,
+            mindMapCollapsed: this.mmCollapsed,
+            mindMapPages: this.mmPages,
+            mindMapFit: this.o.mindMapFit,
+            mindMapMaxScale: this.o.mindMapMaxScale,
+            padding: resolveLayoutPadding(this.o.layoutPadding, width, height),
+            overflow: this.o.layoutOverflow,
+            minFontSize: this.o.layoutMinFontSize,
+            particleBudget: this.o.layoutParticleBudget,
+            trim: this.o.layoutWindow === 'screen',
+          }
         );
-        targets = sampledLayout.points;
         this.hitRegions = sampledLayout.hitRegions;
         this.rippleRegions = sampledLayout.rippleRegions;
+        this.mmShownCollapsed = new Set(sampledLayout.mindMapCollapsedIds);
+        for (const id of sampledLayout.mindMapDroppedExpansions) this.mmExpanded.delete(id);
+        layoutScrollLimit = sampledLayout.scrollMax;
+        const windowMode = this.o.layoutWindow;
+        if (windowMode !== 'screen' || layoutScrollLimit > 0) {
+          // Particles go only to what is in the band/screen (see LayoutWindow).
+          const pad = resolveLayoutPadding(this.o.layoutPadding, width, height);
+          windowed = new LayoutWindow(
+            sampledLayout.points,
+            sampledLayout.screenBudget,
+            sampledLayout.priorityRegionIds,
+            height,
+            typeof windowMode === 'number' ? Math.max(40, windowMode) : windowMode,
+            { top: pad.top, bottom: height - pad.bottom }
+          );
+          layoutScrollLimit = Math.max(layoutScrollLimit, windowed.scrollEnd());
+        } else {
+          targets = sampledLayout.points;
+        }
+        // Keep the scroll position across re-samples (clamped to the new range); the scene comes
+        // back at scroll 0, so shift its regions to the current offset (the window handles points).
+        const off = Math.min(this.scrollPos, layoutScrollLimit);
+        if (off > 0) {
+          for (const r of this.hitRegions) r.y -= off;
+          for (const r of this.rippleRegions) {
+            r.y -= off;
+            r.cy -= off;
+          }
+        }
         this.imageCellSize = sampledLayout.cellSize;
         fontSize = 36;
         if (
@@ -757,9 +1230,16 @@ export class StarDust {
 
     this.glyphFontSize = fontSize;
 
+    const prevScroll = this.scrollPos;
+    this.scrollLimit = layoutScrollLimit;
+    this.scrollPos = Math.min(this.scrollPos, layoutScrollLimit);
+    this.scrollGoal = Math.min(this.scrollGoal, layoutScrollLimit);
+    if (this.scrollPos !== prevScroll) this.o.onScroll?.(this.scrollPos, this.scrollLimit);
+
     const bgRatio = isImage || this.o.targetMode === 'layout' ? 0.34 : 0.6;
-    const bgCount = targets.length > 0 ? Math.round(ambientCount * bgRatio) : ambientCount;
-    const desiredTotal = targets.length + bgCount;
+    const targetCount = windowed ? windowed.poolNeed : targets.length;
+    const bgCount = targetCount > 0 ? Math.round(ambientCount * bgRatio) : ambientCount;
+    const desiredTotal = targetCount + bgCount;
     const pool = this.pool;
 
     resizeParticlePool(pool, desiredTotal, width, height);
@@ -770,14 +1250,20 @@ export class StarDust {
       );
     }
 
-    assignTargetsByProximity(
-      pool,
-      targets,
-      width,
-      height,
-      fontSize,
-      isImage || this.o.targetMode === 'layout'
-    );
+    this.layoutWindow = windowed;
+    this.hints.reset(pool.capacity);
+    if (windowed) {
+      windowed.assignAll(pool, this.scrollPos, width, height);
+    } else {
+      assignTargetsByProximity(
+        pool,
+        targets,
+        width,
+        height,
+        fontSize,
+        isImage || this.o.targetMode === 'layout'
+      );
+    }
     this.o.onParticleCountChange?.(pool.count);
   }
 
@@ -790,6 +1276,13 @@ export class StarDust {
     if (width === 0 || height === 0 || !activeRenderer) return;
 
     const time = (now - startTime) * 0.001;
+
+    if (this.scrollGoal !== this.scrollPos) {
+      const remaining = this.scrollGoal - this.scrollPos;
+      const ease = this.touchScroll?.active ? 0.5 : 0.22;
+      this.applyScroll(Math.abs(remaining) < 0.5 ? remaining : remaining * ease);
+    }
+    this.updateScrollHints(time, now);
     const currentPhysics = this.o.physics;
     const currentPalette = this.o.palette;
     const themeMeta = PALETTE_THEMES[currentPalette];
@@ -884,6 +1377,9 @@ export class StarDust {
     const isImageStage = this.o.targetMode === 'image' && !isFree;
     const isLayoutStage = this.o.targetMode === 'layout' && !isFree;
     const isCompositeStage = isImageStage || isLayoutStage;
+    // Scrollable layouts hand particles across the screen as content scrolls; keep those in transit
+    // faint so text re-forms out of a soft drift instead of an additive white flare.
+    const dimTransit = isLayoutStage && this.layoutWindow !== null;
     const hoveredBtnId = this.hoveredRegionId;
 
     const glyphScale = isImageStage
@@ -987,7 +1483,8 @@ export class StarDust {
     const sweepAxisY = 0.4067;
 
     // Evaluate configurable idle dissolve-into-wave progression
-    const autoSec = currentPhysics.autoDissolveSec;
+    const autoSec =
+      this.o.targetMode === 'layout' && !this.o.layoutAutoDissolve ? 0 : currentPhysics.autoDissolveSec;
     let dissolveProgress = 0;
     if (!isFree && autoSec > 0 && count > 0) {
       if (this.dissolveStartedAt === null) {
@@ -1470,6 +1967,10 @@ export class StarDust {
 
         hueT = glyphHue * (1 - meltBlend) + waveHueT * meltBlend;
         alphaWeight = glyphAlpha * (1 - meltBlend) + waveAlpha * meltBlend;
+        if (dimTransit) {
+          const far = Math.abs(tx[i] - px) + Math.abs(ty[i] - py);
+          if (far > 12) alphaWeight *= 1 - 0.95 * Math.min(1, (far - 12) / 90);
+        }
       } else {
         hueT = waveHueT;
         alphaWeight = waveAlpha;
@@ -1508,7 +2009,8 @@ export class StarDust {
         pEnergy * 0.12 +
         positiveCrest * 0.22 +
         (isHoveredBtnSize ? 0.26 * (1 - meltBlend) : 0);
-      vData[baseOffset + 7] = motionGlow;
+      vData[baseOffset + 7] =
+        dimTransit && isGlyph ? motionGlow * Math.min(1, alphaWeight * 1.6) : motionGlow;
     }
 
     let lineVertexCount = 0;
@@ -1554,6 +2056,21 @@ export class StarDust {
 
   private handlePointerMove(e: PointerEvent): void {
     const { lx, ly } = this.toLocal(e);
+    const overHint = this.o.layoutScrollHint && this.hints.hit(lx, ly) !== null;
+    if (overHint !== this.hintHover) {
+      this.hintHover = overHint;
+      this.updateCursor();
+    }
+    const ts = this.touchScroll;
+    if (ts && this.pointer.down) {
+      const dy = ly - ts.startY;
+      if (!ts.active && Math.abs(dy) > 10) ts.active = true;
+      if (ts.active) {
+        this.scrollGoal = Math.max(0, Math.min(this.scrollLimit, ts.startGoal - dy));
+        this.pointer.active = false; // don't push dust around while dragging to scroll
+        return;
+      }
+    }
     const ptr = this.pointer;
     const x = lx;
     const y = ly;
@@ -1591,10 +2108,12 @@ export class StarDust {
 
     if (this.o.targetMode === 'layout' && !this.o.freeDrift) {
       const hit = this.hitRegions.find(
-        (r) => x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height
+        (r) =>
+          x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height && this.isInBand(r)
       );
       const nextId = hit ? hit.rippleRegionId : -1;
-      if (nextId !== this.hoveredRegionId) {
+      if (nextId !== this.hoveredRegionId && (nextId >= 0 || this.kbFocusId < 0)) {
+        this.kbFocusId = -1;
         this.hoveredRegionId = nextId;
         this.syncHover(nextId >= 0);
       }
@@ -1659,6 +2178,10 @@ export class StarDust {
     ptr.down = true;
     ptr.active = true;
     ptr.downAt = performance.now();
+    this.touchScroll =
+      e.pointerType === 'touch' && this.canScroll()
+        ? { startY: ly, startGoal: this.scrollGoal, active: false }
+        : null;
   }
 
   private handlePointerUp(e: PointerEvent): void {
@@ -1666,10 +2189,22 @@ export class StarDust {
     const ptr = this.pointer;
     if (!ptr.down) return;
     ptr.down = false;
+    const wasScrolling = this.touchScroll?.active;
+    this.touchScroll = null;
+    if (wasScrolling) return; // a scroll drag is not a tap/burst
 
     const now = performance.now();
     const heldMs = now - ptr.downAt;
     const movedDist = Math.hypot(lx - ptr.downX, ly - ptr.downY);
+
+    // A tap on a scroll hint chevron pages the layout.
+    if (movedDist < 16 && this.o.layoutScrollHint) {
+      const hint = this.hints.hit(lx, ly);
+      if (hint) {
+        this.pageScroll(hint === 'down' ? 1 : -1);
+        return;
+      }
+    }
 
     // Spawn interactive click ripple wave across tapped component (works even with Cursor Force: Off)
     if (!this.o.freeDrift && movedDist < 16) {
@@ -1717,27 +2252,11 @@ export class StarDust {
           lx >= r.x &&
           lx <= r.x + r.width &&
           ly >= r.y &&
-          ly <= r.y + r.height
+          ly <= r.y + r.height &&
+          this.isInBand(r)
       );
       if (hit) {
-        const pool = this.pool;
-        for (let i = 0; i < pool.count; i++) {
-          if (pool.regionId[i] === hit.rippleRegionId) {
-            pool.energy[i] = 1;
-          }
-        }
-        this.shockwaves.push({
-          x: hit.x + hit.width * 0.5,
-          y: hit.y + hit.height * 0.5,
-          radius: 10,
-          maxRadius: Math.max(130, hit.width * 0.9),
-          alpha: 0.42,
-        });
-        this.o.onSoundImpulse?.(
-          0.7,
-          (hit.x + hit.width * 0.5) / Math.max(1, this.size.width)
-        );
-        this.o.onLayoutAction?.(hit.action, hit);
+        this.activateHit(hit);
         return;
       }
     }
@@ -1801,6 +2320,7 @@ export class StarDust {
   }
 
   private handlePointerLeave(): void {
+    this.touchScroll = null;
     this.pointer.active = false;
     this.pointer.down = false;
     if (this.hoveredRegionId !== -1) {

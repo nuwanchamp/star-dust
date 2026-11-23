@@ -1,10 +1,14 @@
 {
   "name": "@encenlab/star-dust",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Interactive WebGL dust-particle typography: text, images and layouts formed from drifting motes.",
   "type": "module",
   "license": "MIT",
   "author": "encenlab",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nuwanchamp/star-dust.git"
+  },
   "sideEffects": false,
   "main": "./dist-lib/index.js",
   "module": "./dist-lib/index.js",
@@ -36,8 +40,10 @@
     "build:lib": "vite build -c vite.lib.config.ts && tsc -p tsconfig.lib.json && node scripts/fix-dts-extensions.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist dist-lib",
-    "lint": "tsc --noEmit",
-    "prepublishOnly": "npm run lint && npm run build:lib"
+    "lint": "tsc --noEmit && tsc --noEmit -p tests",
+    "prepublishOnly": "npm run lint && npm run build:lib",
+    "test": "bun test tests",
+    "test:smoke": "node scripts/smoke.mjs"
   },
   "peerDependencies": {
     "react": ">=18"
@@ -49,6 +55,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@types/bun": "1.3.1",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -56,6 +63,7 @@
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
     "lucide-react": "^0.546.0",
+    "playwright-core": "1.56.1",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "tailwindcss": "^4.3.3",

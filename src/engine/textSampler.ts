@@ -281,7 +281,8 @@ export function assignTargetsByProximity(
   width: number,
   height: number,
   fontSize = 72,
-  isImage = false
+  isImage = false,
+  onAssign?: (targetIndex: number, particleIndex: number) => void
 ): void {
   const count = pool.count;
   const {
@@ -398,6 +399,7 @@ export function assignTargetsByProximity(
           : t >= fringeStartIdx
           ? 0.36 + Math.random() * 0.22
           : 0.72 + Math.random() * 0.22;
+      onAssign?.(t, bestIdx);
     }
   }
 }

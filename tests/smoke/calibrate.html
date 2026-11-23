@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><title>calibrate</title><body>
+<script type="module">
+// Compare the mind map particle cost estimate with real sampled point counts.
+import { parseLayoutMarkup } from '/src/engine/layoutParser.ts';
+import { extractMindMapTree, sampleLayoutScene } from '/src/engine/layoutEngine.ts';
+import { estimateCost, layoutMindMap } from '/src/engine/mindMapLayout.ts';
+import { DEFAULT_IMAGE_TUNING } from '/src/engine/imageSampler.ts';
+const SANS = "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif";
+const kids = (n, p, ind) => Array.from({ length: n }, (_, i) => `${ind}- ${p} ${i + 1}`).join('\n');
+const map = (layout, b, c, d) => `<Col><MindMap layout="${layout}">\nCenter topic here\n${Array.from({ length: b }, (_, i) => `  - Branch ${i + 1} topic\n${c ? Array.from({ length: c }, (_, j) => `    - Sub topic ${i + 1}.${j + 1}\n${d ? kids(d, 'Detail item', '      ') : ''}`).join('\n') : ''}`).join('\n')}\n</MindMap></Col>`;
+window.calibrate = async () => {
+  await document.fonts.ready;
+  const ctx = document.createElement('canvas').getContext('2d');
+  const rows = [];
+  for (const [layout, b, c, d] of [['radial', 5, 0, 0], ['radial', 5, 4, 0], ['radial', 4, 3, 3], ['tree', 3, 4, 0], ['tree', 6, 3, 2], ['radial', 8, 2, 0]]) {
+    for (const density of ['sparse', 'balanced', 'dense']) {
+      for (const scale of [1, 1.6]) {
+        const root = parseLayoutMarkup(map(layout, b, c, d)).root;
+        const mmNode = root.children[0];
+        const ctxMm = { fit: 'shrink', maxW: 4000, maxH: 3000, maxScale: scale, collapsedOut: new Set(), droppedOut: new Set() };
+        const est = estimateCost(layoutMindMap(extractMindMapTree(mmNode), { layout, fontFamily: SANS, siblingGap: 14, levelGap: 54, branchGap: 22, compact: false }, ctxMm, ctx), density);
+        const actual = sampleLayoutScene(root, 4000, 3000, density, 'serif', false, true, DEFAULT_IMAGE_TUNING, new Map(), () => null,
+          { mindMapFit: 'shrink', mindMapMaxScale: scale, trim: false, particleBudget: 1e9, padding: { top: 0, right: 0, bottom: 0, left: 0 } }).points.length;
+        rows.push({ map: `${layout} ${b}x${c}x${d}`, density, scale, est, actual, ratio: +(est / actual).toFixed(2) });
+      }
+    }
+  }
+  return rows;
+};
+</script>
