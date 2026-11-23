@@ -47,6 +47,8 @@ export interface DustCanvasProps extends StarDustCallbacks {
   openLinks?: boolean;
   /** See `StarDustOptions.formStaggerMs`. Default `0`. */
   formStaggerMs?: number;
+  /** See `StarDustOptions.formFlowMs`. Default `0`. */
+  formFlowMs?: number;
   /** See `StarDustOptions.mindMapFit`. Default `'collapse'`. */
   mindMapFit?: MindMapFit;
   /** See `StarDustOptions.mindMapMaxScale`. Default 1.6. */

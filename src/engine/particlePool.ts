@@ -26,6 +26,21 @@ export interface ParticlePool {
   windReleaseAt: Float64Array;
   /** performance.now() time a targeted particle leaves the wave for its target; 0 = straight away. */
   joinAt: Float64Array;
+  /** formFlowMs: performance.now() time a particle riding the Perlin wind starts condensing into its place. */
+  condenseAt: Float64Array;
+  /** formFlowMs: time a particle lets go of the old shape and starts riding the wind. */
+  releaseAt: Float64Array;
+  /** formFlowMs: 1 = part of the old shape the new one doesn't use; it dissolves into ambient dust. */
+  flowPhantom: Uint8Array;
+  /** formFlowMs: 1 = was background dust (or the wave) before this flow recruited it into the new shape. */
+  flowRecruit: Uint8Array;
+  /** formFlowMs: a recruit's own brightness from before it was given a target. */
+  flowBaseAlpha: Float32Array;
+  /** formFlowMs: for particles added because the new shape needs more than the old had, the time they
+   * start fading in at their place (after the old shape has dissolved); 0 = not such a particle. */
+  flowBornAt: Float64Array;
+  /** Time a particle added to the pool at the start of a flow starts fading in (0 = not fading). */
+  spawnFadeAt: Float64Array;
 }
 
 export function computeWavePoint(
@@ -85,6 +100,13 @@ export function createParticlePool(initialCapacity: number): ParticlePool {
     gravityBreakUntil: new Float64Array(cap),
     windReleaseAt: new Float64Array(cap),
     joinAt: new Float64Array(cap),
+    condenseAt: new Float64Array(cap),
+    releaseAt: new Float64Array(cap),
+    flowPhantom: new Uint8Array(cap),
+    flowRecruit: new Uint8Array(cap),
+    flowBaseAlpha: new Float32Array(cap),
+    flowBornAt: new Float64Array(cap),
+    spawnFadeAt: new Float64Array(cap),
   };
 }
 
@@ -141,6 +163,13 @@ function growPool(pool: ParticlePool, minCapacity: number): void {
   pool.gravityBreakUntil = growF64(pool.gravityBreakUntil);
   pool.windReleaseAt = growF64(pool.windReleaseAt);
   pool.joinAt = growF64(pool.joinAt);
+  pool.condenseAt = growF64(pool.condenseAt);
+  pool.releaseAt = growF64(pool.releaseAt);
+  pool.flowPhantom = growU8(pool.flowPhantom);
+  pool.flowRecruit = growU8(pool.flowRecruit);
+  pool.flowBaseAlpha = growF32(pool.flowBaseAlpha);
+  pool.flowBornAt = growF64(pool.flowBornAt);
+  pool.spawnFadeAt = growF64(pool.spawnFadeAt);
   pool.capacity = newCap;
 }
 
@@ -201,6 +230,12 @@ export function resizeParticlePool(
     pool.gravityBreakUntil[i] = 0;
     pool.windReleaseAt[i] = 0;
     pool.joinAt[i] = 0;
+    pool.condenseAt[i] = 0;
+    pool.releaseAt[i] = 0;
+    pool.flowPhantom[i] = 0;
+    pool.flowRecruit[i] = 0;
+    pool.flowBornAt[i] = 0;
+    pool.spawnFadeAt[i] = 0;
   }
 
   pool.count = desiredCount;

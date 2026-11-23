@@ -12,8 +12,8 @@ This repo contains two things:
 Install a tagged release from GitHub. Each release tag includes the built files, so no build step runs in your project:
 
 ```sh
-bun add github:nuwanchamp/star-dust#v0.6.0
-# or: npm install github:nuwanchamp/star-dust#v0.6.0
+bun add github:nuwanchamp/star-dust#v0.7.3
+# or: npm install github:nuwanchamp/star-dust#v0.7.3
 ```
 
 Then import it as `@encenlab/star-dust`. To upgrade, change the tag. See [CHANGELOG.md](CHANGELOG.md) for what changed.
@@ -50,6 +50,13 @@ To have the free wave pour into a shape instead of snapping to it, set `formStag
 ```ts
 dust.setOptions({ freeDrift: true });                        // drift as the wave
 dust.setOptions({ freeDrift: false, formStaggerMs: 1500 });  // form over 1.5s
+```
+
+Or set `formFlowMs` to have every change of shape flow through the Perlin wind: the old shape (or the wave) melts into swirling streams, which condense into the new shape over about that many milliseconds. It applies to scene changes too (a new `layoutAst`, `text`, `imageSrc` or `targetMode`), not to re-layouts of the same scene:
+
+```ts
+dust.setOptions({ formFlowMs: 2200 });                      // every new shape flows in over ~2.2s
+dust.setOptions({ layoutAst: nextScene });                  // the current scene streams into the next
 ```
 
 `dust.supported` is `false` when WebGL2 is unavailable. The instance then does nothing.

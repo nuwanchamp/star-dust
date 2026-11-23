@@ -222,6 +222,16 @@ export class LayoutWindow {
     return released.length > 0 || n > 0;
   }
 
+  /** Hand the target held by particle `from` to particle `to` (formFlowMs swaps particles around). */
+  relink(from: number, to: number, pool: ParticlePool): void {
+    this.ensureCapacity(pool);
+    const t = this.particleTarget[from];
+    if (t === undefined || t < 0) return;
+    this.particleTarget[from] = -1;
+    this.targetParticle[t] = to;
+    this.particleTarget[to] = t;
+  }
+
   private link(t: number, p: number): void {
     this.targetParticle[t] = p;
     this.particleTarget[p] = t;

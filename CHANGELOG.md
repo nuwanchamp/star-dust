@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.7.3
+
+### Fixed
+- **Leaving the free wave is seamless.**
+  - While the new shape is still loading (images, fonts), the dust keeps behaving and looking like the wave. Before, the wave dimmed for the frames the load took.
+  - With `formFlowMs`, particles added to the pool when a flow starts fade in over about 1.2s instead of popping into view.
+  - Wave particles not yet released into the flow keep the wave's look, so the wave no longer flashes for a frame or two after a heavy assignment.
+
+## 0.7.2
+
+### Fixed
+- **`formFlowMs`: a new scene is built only from the old scene's dust.** Matching each new place to the nearest particle handed some places to background dust beside the old shape, which then lit up, drifted in or twinkled at the edges before the old shape had even dissolved. Those places now go to spare old-shape particles, and background dust takes no part. If the new scene needs more particles than the old one had, the extra ones wait invisibly at their place and fade in once the old scene has dissolved (from 70% of the span, over about 0.9s). Replaces the 0.7.1 handling of recruited background dust.
+
+## 0.7.1
+
+### Fixed
+- **`formFlowMs`: background dust recruited into a new shape no longer flashes.** When a new scene needs more particles than the old one has, it takes some from the faint background. Those were drawn at full shape brightness from the first frame, and started riding the wind at once, so bright clouds bloomed at the edges of the screen as the old shape began to dissolve. Recruits now keep their own faint look; scene to scene they also drift gently until their landing time and brighten only as they arrive. Leaving the wave, they still pour in with the full stream.
+
+## 0.7.0
+
+Shapes can flow into each other through the Perlin wind.
+
+### Added
+- **`formFlowMs`** (default `0`). When the dust takes a new shape (leaving the free wave, or a new `layoutAst`, `text`, `imageSrc` or `targetMode`), the old shape melts into the Perlin wind and its particles ride the streams for about this many milliseconds, then each condenses into its new place at its own moment. Particles aren't dropped mid-transition, and the transition stays visible the same way as the `formStaggerMs` pour. Re-layouts of the same scene (resize, mind-map toggles, density) aren't flowed. Takes precedence over `formStaggerMs`.
+
+## 0.6.1
+
+### Fixed
+- **The `formStaggerMs` pour is visible.** Particles still waiting on the wave keep its full brightness, and the rest of the wave dims gradually over the pour (plus about 1.2s to settle) instead of dimming at once. Before, the wave went faint as soon as a shape started forming, so in layouts the pour was barely visible.
+
 ## 0.6.0
 
 The free wave can pour into a shape.
