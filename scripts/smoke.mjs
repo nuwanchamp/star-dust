@@ -360,14 +360,20 @@ try {
     window.__old = { idx, xs, ys };
     return idx.length;
   });
+  // The same particles before and after the switch: everything that was background, including the
+  // ones the new scene recruits (they must not flash to full brightness where they sit).
+  await page.evaluate(() => {
+    const p = window.dust.pool; window.__bg = [];
+    for (let i = 0; i < p.count; i++) if (!p.hasTarget[i]) window.__bg.push(i);
+  });
   const bgWaveAlpha = () => page.evaluate(() => {
-    const p = window.dust.pool, v = window.dust.vertexData; let n = 0, sum = 0;
-    for (let i = 0; i < p.count; i++) if (!p.hasTarget[i] && p.waveLayer[i] >= 0) { n++; sum += v[i * 8 + 5]; }
-    return sum / Math.max(1, n);
+    const v = window.dust.vertexData; let sum = 0;
+    for (const i of window.__bg) sum += v[i * 8 + 5];
+    return sum / Math.max(1, window.__bg.length);
   });
   const bgBefore = await bgWaveAlpha();
   // Layout to layout (same stage brightness): part of the current tree is a new, smaller scene.
-  await page.evaluate(() => window.dust.setOptions({ layoutAst: window.dust.o.layoutAst.children[0] }));
+  await page.evaluate(() => { window.__full = window.dust.o.layoutAst; window.dust.setOptions({ layoutAst: window.__full.children[0] }); });
   await hasTargets();
   await frames(2);
   const bgAfter = await bgWaveAlpha();
@@ -381,6 +387,33 @@ try {
     return still / idx.length;
   });
   check('flow: the old shape erodes grain by grain (some let go, the rest still hold)', erosion > 0.3 && erosion < 0.97, `${(erosion * 100).toFixed(0)}% still in place after ~0.45s`);
+  // Growing scene (needs more dust than the old one has): recruits come from the background and must
+  // start as faint as the background they came from, not flash at full brightness where they sit.
+  await landed();
+  await page.evaluate(() => {
+    const p = window.dust.pool; window.__bg = [];
+    for (let i = 0; i < p.count; i++) if (!p.hasTarget[i]) window.__bg.push(i);
+  });
+  // Brightness x glow of the recruited ones (what the eye sees blooming at the edges).
+  const recruitLook = () => page.evaluate(() => {
+    const p = window.dust.pool, v = window.dust.vertexData; let n = 0, sum = 0;
+    for (const i of window.__bg) if (p.hasTarget[i] || window.__recruits?.has(i)) { n++; sum += v[i * 8 + 5] * (1 + v[i * 8 + 7]); }
+    return { n, look: sum / Math.max(1, n) };
+  });
+  await page.evaluate(() => { window.__recruits = null; });
+  const growBefore = await page.evaluate(() => {
+    const v = window.dust.vertexData; let sum = 0;
+    for (const i of window.__bg) sum += v[i * 8 + 5] * (1 + v[i * 8 + 7]);
+    return sum / Math.max(1, window.__bg.length);
+  });
+  await page.evaluate(() => window.dust.setOptions({ layoutAst: window.__full }));
+  await page.waitForFunction(() => window.dust.flowStartedAt > 0, null, { timeout: 10000 });
+  await page.evaluate(() => { const p = window.dust.pool; window.__recruits = new Set(window.__bg.filter((i) => p.hasTarget[i])); });
+  await page.waitForTimeout(500);
+  const grow = await recruitLook();
+  check('flow: background dust recruited by a bigger scene stays background-faint (no bloom at the edges)', grow.n > 100 && grow.look < growBefore * 1.6, `${grow.n} recruited; look ${growBefore.toFixed(3)} -> ${grow.look.toFixed(3)} after 0.5s`);
+  await landed();
+  check('flow: the quiet recruits still land in the bigger scene', true);
 
   check('no page errors', errors.length === 0, errors.join(' | '));
 } finally {

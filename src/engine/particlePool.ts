@@ -32,6 +32,10 @@ export interface ParticlePool {
   releaseAt: Float64Array;
   /** formFlowMs: 1 = part of the old shape the new one doesn't use; it dissolves into ambient dust. */
   flowPhantom: Uint8Array;
+  /** formFlowMs: 1 = was background dust (or the wave) before this flow recruited it into the new shape. */
+  flowRecruit: Uint8Array;
+  /** formFlowMs: a recruit's own brightness from before it was given a target. */
+  flowBaseAlpha: Float32Array;
 }
 
 export function computeWavePoint(
@@ -94,6 +98,8 @@ export function createParticlePool(initialCapacity: number): ParticlePool {
     condenseAt: new Float64Array(cap),
     releaseAt: new Float64Array(cap),
     flowPhantom: new Uint8Array(cap),
+    flowRecruit: new Uint8Array(cap),
+    flowBaseAlpha: new Float32Array(cap),
   };
 }
 
@@ -153,6 +159,8 @@ function growPool(pool: ParticlePool, minCapacity: number): void {
   pool.condenseAt = growF64(pool.condenseAt);
   pool.releaseAt = growF64(pool.releaseAt);
   pool.flowPhantom = growU8(pool.flowPhantom);
+  pool.flowRecruit = growU8(pool.flowRecruit);
+  pool.flowBaseAlpha = growF32(pool.flowBaseAlpha);
   pool.capacity = newCap;
 }
 
@@ -216,6 +224,7 @@ export function resizeParticlePool(
     pool.condenseAt[i] = 0;
     pool.releaseAt[i] = 0;
     pool.flowPhantom[i] = 0;
+    pool.flowRecruit[i] = 0;
   }
 
   pool.count = desiredCount;

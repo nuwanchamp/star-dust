@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1
+
+### Fixed
+- **`formFlowMs`: background dust recruited into a new shape no longer flashes.** When a new scene needs more particles than the old one has, it takes some from the faint background. Those were drawn at full shape brightness from the first frame, and started riding the wind at once, so bright clouds bloomed at the edges of the screen as the old shape began to dissolve. Recruits now keep their own faint look; scene to scene they also drift gently until their landing time and brighten only as they arrive. Leaving the wave, they still pour in with the full stream.
+
 ## 0.7.0
 
 Shapes can flow into each other through the Perlin wind.
