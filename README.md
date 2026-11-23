@@ -12,8 +12,8 @@ This repo contains two things:
 Install a tagged release from GitHub. Each release tag includes the built files, so no build step runs in your project:
 
 ```sh
-bun add github:nuwanchamp/star-dust#v0.7.2
-# or: npm install github:nuwanchamp/star-dust#v0.7.2
+bun add github:nuwanchamp/star-dust#v0.7.3
+# or: npm install github:nuwanchamp/star-dust#v0.7.3
 ```
 
 Then import it as `@encenlab/star-dust`. To upgrade, change the tag. See [CHANGELOG.md](CHANGELOG.md) for what changed.

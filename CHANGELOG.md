@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3
+
+### Fixed
+- **Leaving the free wave is seamless.**
+  - While the new shape is still loading (images, fonts), the dust keeps behaving and looking like the wave. Before, the wave dimmed for the frames the load took.
+  - With `formFlowMs`, particles added to the pool when a flow starts fade in over about 1.2s instead of popping into view.
+  - Wave particles not yet released into the flow keep the wave's look, so the wave no longer flashes for a frame or two after a heavy assignment.
+
 ## 0.7.2
 
 ### Fixed

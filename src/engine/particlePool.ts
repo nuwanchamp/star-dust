@@ -39,6 +39,8 @@ export interface ParticlePool {
   /** formFlowMs: for particles added because the new shape needs more than the old had, the time they
    * start fading in at their place (after the old shape has dissolved); 0 = not such a particle. */
   flowBornAt: Float64Array;
+  /** Time a particle added to the pool at the start of a flow starts fading in (0 = not fading). */
+  spawnFadeAt: Float64Array;
 }
 
 export function computeWavePoint(
@@ -104,6 +106,7 @@ export function createParticlePool(initialCapacity: number): ParticlePool {
     flowRecruit: new Uint8Array(cap),
     flowBaseAlpha: new Float32Array(cap),
     flowBornAt: new Float64Array(cap),
+    spawnFadeAt: new Float64Array(cap),
   };
 }
 
@@ -166,6 +169,7 @@ function growPool(pool: ParticlePool, minCapacity: number): void {
   pool.flowRecruit = growU8(pool.flowRecruit);
   pool.flowBaseAlpha = growF32(pool.flowBaseAlpha);
   pool.flowBornAt = growF64(pool.flowBornAt);
+  pool.spawnFadeAt = growF64(pool.spawnFadeAt);
   pool.capacity = newCap;
 }
 
@@ -231,6 +235,7 @@ export function resizeParticlePool(
     pool.flowPhantom[i] = 0;
     pool.flowRecruit[i] = 0;
     pool.flowBornAt[i] = 0;
+    pool.spawnFadeAt[i] = 0;
   }
 
   pool.count = desiredCount;

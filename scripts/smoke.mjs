@@ -423,6 +423,64 @@ try {
   const bornLate = await bornLook();
   check('flow: …and they have faded in once the new scene has formed', bornLate.alpha > 0.1, JSON.stringify(bornLate));
 
+  // 13. Leaving the wave is seamless: no dim gap while the new shape loads, no pop of new particles.
+  await page.evaluate((m) => window.make(m, { freeDrift: true, formFlowMs: 2500 }), LINKS);
+  await frames(30);
+  const waveToShape = await page.evaluate(async () => {
+    const d = window.dust;
+    const next = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const ribbon = () => {
+      const p = d.pool, v = d.vertexData; let n = 0, a = 0;
+      for (let i = 0; i < p.count; i++) if (p.waveLayer[i] >= 0) { n++; a += v[i * 8 + 5]; }
+      return a / Math.max(1, n);
+    };
+    const light = () => { const p = d.pool, v = d.vertexData; let a = 0; for (let i = 0; i < p.count; i++) a += v[i * 8 + 5]; return a; };
+    await next();
+    const parts = () => { const p = d.pool, v = d.vertexData; const o = { oldT: 0, oldN: 0, newA: 0, nOld: window.__n0 }; for (let i = 0; i < p.count; i++) { const a = v[i * 8 + 5]; if (i < window.__n0) { if (p.hasTarget[i]) o.oldT += a; else o.oldN += a; } else o.newA += a; } return o; };
+    window.__n0 = d.pool.count;
+    window.__a0 = Float32Array.from({ length: d.pool.count }, (_, i) => d.vertexData[i * 8 + 5]);
+    const beforeParts = parts();
+    const beforeRibbon = ribbon(), beforeLight = light();
+    d.setOptions({ freeDrift: false });
+    let minRibbon = Infinity, maxLight = 0, gapFrames = 0, targeted = false;
+    for (let f = 0; f < 40; f++) {
+      await next();
+      const has = (() => { const p = d.pool; for (let i = 0; i < p.count; i++) if (p.hasTarget[i]) return true; return false; })();
+      if (!has) { gapFrames++; minRibbon = Math.min(minRibbon, ribbon()); }
+      else if (!targeted) { targeted = true; window.__afterParts = parts(); window.__count = d.pool.count;
+        { const p = d.pool, v = d.vertexData, g = { rib: [0, 0, 0], dust: [0, 0, 0] }; for (let i = 0; i < window.__n0; i++) if (p.hasTarget[i]) { const k = p.waveLayer[i] >= 0 ? 'rib' : 'dust'; g[k][0]++; g[k][1] += window.__a0[i]; g[k][2] += v[i * 8 + 5]; } window.__groups = { rib: [g.rib[0], (g.rib[1] / g.rib[0]).toFixed(3), (g.rib[2] / g.rib[0]).toFixed(3)], dust: [g.dust[0], (g.dust[1] / Math.max(1, g.dust[0])).toFixed(3), (g.dust[2] / Math.max(1, g.dust[0])).toFixed(3)] }; } for (let k = 0; k < 3; k++) { maxLight = Math.max(maxLight, light()); await next(); } }
+      if (targeted) break;
+    }
+    return { gapFrames, dimDuringGap: minRibbon === Infinity ? 1 : minRibbon / beforeRibbon, lightJump: maxLight / beforeLight, groups: window.__groups };
+  });
+  check('leaving the wave: no dim gap while the new shape loads', waveToShape.dimDuringGap > 0.8, JSON.stringify(waveToShape));
+  check('leaving the wave: new particles don\'t pop in (total light steady)', waveToShape.lightJump < 1.15, JSON.stringify(waveToShape));
+
+  // Same, but the shape's image takes a while to arrive (a first visit): the wave must not dim meanwhile.
+  const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64');
+  await page.route('**/slow-shape*.png', async (route) => { await new Promise((r) => setTimeout(r, 600)); await route.fulfill({ body: PNG, contentType: 'image/png' }); });
+  // Text mode while drifting (so the layout's image isn't preloaded), then switch to the layout.
+  await page.evaluate(() => window.make('<Col><Heading>Loading</Heading><Image src="/slow-shape-1.png" width="120" height="120" /></Col>', { freeDrift: true, formFlowMs: 2500, targetMode: 'text', text: '' }));
+  await frames(30);
+  const slowGap = await page.evaluate(async () => {
+    const d = window.dust;
+    const next = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const ribbon = () => { const p = d.pool, v = d.vertexData; let n = 0, a = 0; for (let i = 0; i < p.count; i++) if (p.waveLayer[i] >= 0) { n++; a += v[i * 8 + 5]; } return a / Math.max(1, n); };
+    await next();
+    const before = ribbon();
+    d.setOptions({ freeDrift: false, targetMode: 'layout' });
+    let min = Infinity, frames = 0;
+    const t0 = performance.now();
+    while (performance.now() - t0 < 500) {
+      await next();
+      const p = d.pool; let has = false; for (let i = 0; i < p.count; i++) if (p.hasTarget[i]) { has = true; break; }
+      if (has) break;
+      frames++; min = Math.min(min, ribbon());
+    }
+    return { frames, ratio: min === Infinity ? 1 : min / before };
+  });
+  check('leaving the wave: the wave keeps its look while a slow image loads', slowGap.frames > 2 && slowGap.ratio > 0.8, JSON.stringify(slowGap));
+
   check('no page errors', errors.length === 0, errors.join(' | '));
 } finally {
   await browser.close();

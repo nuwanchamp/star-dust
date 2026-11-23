@@ -265,6 +265,8 @@ const FLOW_SPREAD = 0.05;
  * fading in at this share of the span (once the old shape has dissolved), over FLOW_BORN_FADE_MS. */
 const FLOW_BORN_DELAY = 0.7;
 const FLOW_BORN_FADE_MS = 900;
+/** formFlowMs: particles added to the pool when a flow starts fade in over this long (no pop). */
+const FLOW_SPAWN_FADE_MS = 1200;
 
 const DEFAULTS: Omit<ResolvedOptions, keyof StarDustCallbacks> = {
   targetMode: 'text',
@@ -539,6 +541,8 @@ export class StarDust {
   private hasAssigned = false;
   /** When the current formFlowMs transition started, and its span; 0 = none. */
   private flowStartedAt = 0;
+  /** freeDrift was just turned off but the new shape's targets aren't assigned yet (still loading). */
+  private formPending = false;
   /** The current formFlowMs transition started from the free wave (vs from another shape). */
   private flowFromWave = false;
   private flowSpanMs = 0;
@@ -676,6 +680,10 @@ export class StarDust {
     if (o.layoutAst !== prev.layoutAst || o.targetMode !== prev.targetMode) {
       this.setKeyboardFocus(-1);
     }
+    // Leaving the wave: keep behaving (and looking) like the wave until the new shape is ready,
+    // instead of dimming the wave for the frames its images or fonts take to load.
+    if (prev.freeDrift && !o.freeDrift) this.formPending = true;
+    if (o.freeDrift) this.formPending = false;
     if (
       o.layoutAst !== prev.layoutAst ||
       o.targetMode !== prev.targetMode ||
@@ -1331,6 +1339,7 @@ export class StarDust {
     // Don't drop particles mid-flow: they're the old shape's dust, now riding the wind.
     const desiredTotal = flow ? Math.max(targetCount + bgCount, pool.count) : targetCount + bgCount;
 
+    const countBefore = pool.count;
     resizeParticlePool(pool, desiredTotal, width, height);
     // Scene to scene: remember which particles made up the old shape, and their look, so the ones the
     // new shape doesn't use can dissolve with the rest instead of vanishing at once.
@@ -1375,6 +1384,13 @@ export class StarDust {
       this.buildFromOldShape(oldShape, oldAlpha, windowed, width, height);
     }
     this.scheduleCondense(flow ? this.o.formFlowMs : 0, fromWave);
+    // Particles added to the pool for this flow fade in rather than popping into view.
+    pool.spawnFadeAt.fill(0, 0, Math.min(countBefore, pool.count));
+    if (flow) {
+      const now = performance.now();
+      for (let i = countBefore; i < pool.count; i++) pool.spawnFadeAt[i] = now;
+    }
+    this.formPending = false;
     if (stagger || (flow && fromWave)) {
       // Leaving the wave: keep the wave visible and dim it gradually (see pourMix in renderFrame).
       // Scene to scene the background stays at its scene brightness; only particles in flight are
@@ -1553,7 +1569,7 @@ export class StarDust {
     const themeMeta = PALETTE_THEMES[currentPalette];
     const isDark = themeMeta.isDark;
     const isReduced = this.reducedMotion;
-    const isFree = this.o.freeDrift;
+    const isFree = this.o.freeDrift || this.formPending;
     const ptr = this.pointer;
 
     ptr.vx *= 0.85;
@@ -1624,6 +1640,7 @@ export class StarDust {
       flowRecruit,
       flowBaseAlpha,
       flowBornAt,
+      spawnFadeAt,
     } = pool;
 
     const turb = (isReduced ? 0.18 : 1) * currentPhysics.turbulence;
@@ -2078,11 +2095,18 @@ export class StarDust {
         // ramps in is the wind, so the old shape melts where it stands.
         if (flowActive && releaseAt[i] > 0) {
           if (now < releaseAt[i]) {
-            // Still part of the old shape: stay put (no pull to the new place yet).
-            pvx = vx[i] * 0.8;
-            pvy = vy[i] * 0.8;
+            // Not released yet. Old-shape particles stay put (no pull to the new place yet). Particles
+            // from the wave (recruits) keep the wave's look: the frame clock can run a little behind
+            // the release times stamped during a heavy assignment, and drawing them as the new shape
+            // for that frame or two flashes the whole wave.
+            if (flowRecruit[i] === 1) {
+              pFlowMix = 1;
+            } else {
+              pvx = vx[i] * 0.8;
+              pvy = vy[i] * 0.8;
+            }
           } else {
-            const ride = Math.min(1, (now - releaseAt[i]) / FLOW_RAMP_IN_MS);
+            const ride = Math.max(0, Math.min(1, (now - releaseAt[i]) / FLOW_RAMP_IN_MS));
             const phantom = flowPhantom[i] === 1;
             if (phantom && now >= condenseAt[i]) {
               // An old-shape particle the new shape doesn't use: from here on it's ambient dust.
@@ -2287,6 +2311,12 @@ export class StarDust {
         const t = Math.max(0, Math.min(1, (now - bornAt) / FLOW_BORN_FADE_MS));
         bornFade = t * t * (3 - 2 * t);
         if (t >= 1) flowBornAt[i] = 0;
+      }
+      const spawnAt = spawnFadeAt[i];
+      if (spawnAt > 0) {
+        const t = Math.max(0, Math.min(1, (now - spawnAt) / FLOW_SPAWN_FADE_MS));
+        bornFade *= t * t * (3 - 2 * t);
+        if (t >= 1) spawnFadeAt[i] = 0;
       }
 
       if (isGlyph) {
