@@ -172,6 +172,20 @@ const FONT_FAMILY_MAP: Record<FontStyle, string> = {
   mono: "'JetBrains Mono', ui-monospace, monospace",
 };
 
+/** Effective sampling density of each node (its own `density` attribute, else its parent's). */
+const nodeDensity = new WeakMap<LayoutNode, DensityPreset>();
+
+function parseDensityAttr(value: string | undefined): DensityPreset | null {
+  const v = (value || '').trim().toLowerCase();
+  return v === 'dense' || v === 'balanced' || v === 'sparse' ? v : null;
+}
+
+function assignDensities(node: LayoutNode, inherited: DensityPreset): void {
+  const own = parseDensityAttr(node.attrs.density) ?? inherited;
+  nodeDensity.set(node, own);
+  for (const child of node.children) assignDensities(child, own);
+}
+
 const LAYOUT_BUDGET_BY_DENSITY: Record<DensityPreset, number> = {
   sparse: 16500,
   balanced: 30000,
@@ -1021,7 +1035,7 @@ function measureNode(
         branchGap: parseNum(node.attrs.branchGap, compact ? 16 : 22),
         compact,
       },
-      mindMap,
+      { ...mindMap, density: nodeDensity.get(node) ?? mindMap.density },
       measureCtx
     );
     return {
@@ -1424,7 +1438,7 @@ export function sampleLayoutScene(
   root: LayoutNode | null,
   viewportWidth: number,
   viewportHeight: number,
-  density: DensityPreset,
+  sceneDensity: DensityPreset,
   defaultFontStyle: FontStyle,
   invertContrast: boolean,
   isDarkTheme: boolean,
@@ -1447,6 +1461,9 @@ export function sampleLayoutScene(
   if (!root || viewportWidth < 120 || viewportHeight < 120) {
     return empty;
   }
+
+  const density = sceneDensity;
+  assignDensities(root, sceneDensity);
 
   const measureCanvas = document.createElement('canvas');
   const measureCtx = measureCanvas.getContext('2d');
@@ -1584,6 +1601,7 @@ export function sampleLayoutScene(
   for (const leaf of placedLeaves) {
     const { node } = leaf.measured;
     const { rect, ripple } = leaf;
+    const density = nodeDensity.get(node) ?? sceneDensity;
 
     if (node.tag === 'Spacer') {
       continue;
@@ -2279,6 +2297,7 @@ export function sampleLayoutScene(
     if (!img) continue;
 
     const { attrs } = leaf.measured.node;
+    const density = nodeDensity.get(leaf.measured.node) ?? sceneDensity;
     const localInvert =
       attrs.invert === 'true' ? !invertContrast : attrs.invert === 'false' ? false : invertContrast;
 

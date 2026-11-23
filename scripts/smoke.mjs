@@ -199,6 +199,26 @@ try {
     return top > 50 && bottom > 50 && Math.abs(top - bottom) / (top + bottom) < 0.25;
   }));
 
+  // 8. Per-element density: own attribute, inherited from a container, default from the scene.
+  const counts = await page.evaluate(async () => {
+    const { parseLayoutMarkup } = await import('/src/engine/layoutParser.ts');
+    const { sampleLayoutScene } = await import('/src/engine/layoutEngine.ts');
+    const { DEFAULT_IMAGE_TUNING } = await import('/src/engine/imageSampler.ts');
+    await document.fonts.ready;
+    const h = (d) => `<Heading size="xl"${d ? ` density="${d}"` : ''}>Density</Heading>`;
+    const markup = `<Col gap="20">${h()}${h('dense')}${h('sparse')}<Col density="dense">${h()}${h('sparse')}</Col></Col>`;
+    const scene = sampleLayoutScene(parseLayoutMarkup(markup).root, 1280, 1400, 'balanced', 'serif', false, true,
+      DEFAULT_IMAGE_TUNING, new Map(), () => null, { trim: false, particleBudget: 1e9 });
+    const per = new Map();
+    for (const p of scene.points) per.set(p.regionId, (per.get(p.regionId) ?? 0) + 1);
+    return scene.rippleRegions.filter((r) => r.tag === 'Heading').map((r) => per.get(r.id) ?? 0);
+  });
+  const [plain, dense, sparse, inherited, overridden] = counts;
+  check('density attribute changes an element\'s particle count (dense > default > sparse)',
+    dense > plain * 1.5 && sparse < plain * 0.8, counts.join(' / '));
+  check('density is inherited from a container and can be overridden inside it',
+    Math.abs(inherited - dense) / dense < 0.1 && Math.abs(overridden - sparse) / sparse < 0.1);
+
   check('no page errors', errors.length === 0, errors.join(' | '));
 } finally {
   await browser.close();

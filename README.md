@@ -80,6 +80,18 @@ dust.setOptions({ targetMode: 'layout', layoutAst: root, onLayoutAction: (action
 
 Clickable elements get the hover glow, a pointer cursor, keyboard focus (Tab, then Enter), and `onLayoutAction(action)`. `open:<url>` actions also open the link in a new tab (`noopener`). Only `http`, `https`, `mailto` and `tel` links are opened. Set `openLinks: false` to handle navigation yourself. Small images (96px or less) are drawn without the soft edge fade and with a particle count matched to their size, so icons stay crisp. SVGs with only a `viewBox` (common in icon sets) render whole.
 
+**Particle density per element.** Any element can set `density="sparse" | "balanced" | "dense"`, overriding the instance's `physics.density` for that element. A container (`<Col>`, `<Row>`) passes its density down to its children, and a child can override it:
+
+```html
+<Col density="sparse">
+  <Heading density="dense">Sharp, bright title</Heading>
+  <Text>Light background text</Text>
+  <Image src="/hero.jpg" width="320" height="200" />
+</Col>
+```
+
+Dense elements use more of the particle budget, so in a long layout the `'auto'` band ends sooner. Text of 26px or smaller is never sampled sparser than `balanced`, so it stays readable.
+
 Layouts stay formed while someone reads them. Text and image modes melt into the wave after `physics.autoDissolveSec` (20s) of inactivity, but layouts only do so with `layoutAutoDissolve: true`.
 
 **Keyboard.** The canvas can take keyboard focus. Tab and Shift+Tab step through the layout's buttons in reading order, scrolling each one into view and highlighting it. Enter or Space activates the highlighted button, and Esc clears it. On a long layout, the arrow keys scroll a line, Page Up/Down and Space scroll a band, and Home/End jump to the start or end. At either end of the layout, keys pass through to the page.

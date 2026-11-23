@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+Particle density per layout element.
+
+### Added
+- **`density` attribute on any layout element** (`sparse` | `balanced` | `dense`). It overrides `physics.density` for that element, and containers pass it down to their children. Mind maps use it in their particle budget fit.
+
 ## 0.4.1
 
 ### Fixed
